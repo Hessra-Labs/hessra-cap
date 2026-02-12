@@ -1,0 +1,15 @@
+[package]
+name = "hessra-cap"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Jake Valentic <jake@hessra.net>"]
+description = "Hessra capability engine with default policy backend"
+repository = "https://github.com/Hessra-Labs/hessra-cap"
+documentation = "https://docs.rs/hessra-cap"
+keywords = ["hessra", "capability", "authorization", "security"]
+categories = ["authentication"]
+
+[dependencies]
+hessra-cap-engine = { workspace = true }
+hessra-cap-policy = { workspace = true }

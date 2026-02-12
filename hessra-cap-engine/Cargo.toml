@@ -1,0 +1,26 @@
+[package]
+name = "hessra-cap-engine"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Jake Valentic <jake@hessra.net>"]
+description = "Capability engine for the Hessra authorization system"
+repository = "https://github.com/Hessra-Labs/hessra-cap"
+documentation = "https://docs.rs/hessra-cap-engine"
+keywords = ["hessra", "capability", "authorization", "security", "engine"]
+categories = ["authentication", "api-bindings"]
+
+[dependencies]
+hessra-token-core = { workspace = true }
+hessra-cap-token = { workspace = true }
+hessra-identity-token = { workspace = true }
+biscuit-auth = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+hessra-cap-policy = { workspace = true }

@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "hessra-cap-engine",
+    "hessra-cap-policy",
+    "hessra-cap",
+]
+
+resolver = "3"
+
+[workspace.dependencies]
+hessra-token-core = { path = "../hessra-tokens/hessra-token-core", version = "1.0.0" }
+hessra-cap-token = { path = "../hessra-tokens/hessra-cap-token", version = "1.0.0" }
+hessra-identity-token = { path = "../hessra-tokens/hessra-identity-token", version = "1.0.0" }
+hessra-cap-engine = { path = "hessra-cap-engine", version = "0.1.0" }
+hessra-cap-policy = { path = "hessra-cap-policy", version = "0.1.0" }
+biscuit-auth = { version = "6.0", features = ["pem"] }
+base64 = "0.22"
+chrono = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+hex = "0.4"
+toml = "0.8"
+glob-match = "0.2"
+tracing = "0.1"

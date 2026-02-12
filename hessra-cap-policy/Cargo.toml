@@ -1,0 +1,19 @@
+[package]
+name = "hessra-cap-policy"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Jake Valentic <jake@hessra.net>"]
+description = "Default CList policy backend for the Hessra capability engine"
+repository = "https://github.com/Hessra-Labs/hessra-cap"
+documentation = "https://docs.rs/hessra-cap-policy"
+keywords = ["hessra", "capability", "policy", "authorization", "security"]
+categories = ["authentication", "config"]
+
+[dependencies]
+hessra-cap-engine = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+glob-match = { workspace = true }
+tracing = { workspace = true }
