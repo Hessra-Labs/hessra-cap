@@ -8,8 +8,9 @@
 //! - Context tokens for information flow control (taint tracking)
 //! - `CapabilityEngine` that orchestrates minting, verification, and policy evaluation
 //!
-//! The engine delegates token operations to the `hessra-cap-token` and
-//! `hessra-identity-token` crates for the actual cryptographic operations.
+//! The engine delegates token operations to the `hessra-cap-token`,
+//! `hessra-identity-token`, and `hessra-context-token` crates for the
+//! actual cryptographic operations.
 
 pub mod context;
 pub mod engine;

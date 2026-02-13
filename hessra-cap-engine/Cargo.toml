@@ -14,13 +14,9 @@ categories = ["authentication", "api-bindings"]
 hessra-token-core = { workspace = true }
 hessra-cap-token = { workspace = true }
 hessra-identity-token = { workspace = true }
-biscuit-auth = { workspace = true }
-base64 = { workspace = true }
-chrono = { workspace = true }
+hessra-context-token = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-hex = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 hessra-cap-policy = { workspace = true }

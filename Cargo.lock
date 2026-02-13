@@ -443,17 +443,13 @@ dependencies = [
 name = "hessra-cap-engine"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
- "biscuit-auth",
- "chrono",
  "hessra-cap-policy",
  "hessra-cap-token",
+ "hessra-context-token",
  "hessra-identity-token",
  "hessra-token-core",
- "hex",
  "serde",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -479,6 +475,17 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "hessra-context-token"
+version = "1.0.0"
+dependencies = [
+ "biscuit-auth",
+ "chrono",
+ "hessra-token-core",
  "thiserror 2.0.18",
  "tracing",
 ]

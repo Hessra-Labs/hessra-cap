@@ -11,6 +11,7 @@ resolver = "3"
 hessra-token-core = { path = "../hessra-tokens/hessra-token-core", version = "1.0.0" }
 hessra-cap-token = { path = "../hessra-tokens/hessra-cap-token", version = "1.0.0" }
 hessra-identity-token = { path = "../hessra-tokens/hessra-identity-token", version = "1.0.0" }
+hessra-context-token = { path = "../hessra-tokens/hessra-context-token", version = "1.0.0" }
 hessra-cap-engine = { path = "hessra-cap-engine", version = "0.1.0" }
 hessra-cap-policy = { path = "hessra-cap-policy", version = "0.1.0" }
 biscuit-auth = { version = "6.0", features = ["pem"] }
