@@ -448,6 +448,7 @@ dependencies = [
  "hessra-context-token",
  "hessra-identity-token",
  "hessra-token-core",
+ "hex",
  "serde",
  "thiserror 2.0.18",
 ]

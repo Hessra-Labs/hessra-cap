@@ -3,6 +3,7 @@
 //! Provides the unified object model where everything is an object with a
 //! capability space, and the `PolicyBackend` trait for pluggable policy evaluation.
 
+use hessra_token_core::TokenTimeConfig;
 use serde::{Deserialize, Serialize};
 
 /// Object identifier in the unified namespace.
@@ -130,6 +131,25 @@ pub struct MintResult {
     pub context: Option<crate::ContextToken>,
 }
 
+/// Options for customizing capability minting beyond the basic case.
+///
+/// Used with `CapabilityEngine::mint_capability_with_options` to add namespace
+/// restrictions or custom time configuration to minted tokens.
+#[derive(Debug, Clone, Default)]
+pub struct MintOptions {
+    /// Restrict the token to a specific namespace.
+    pub namespace: Option<String>,
+    /// Override the default time config. If `None`, uses default (5 minutes).
+    pub time_config: Option<TokenTimeConfig>,
+}
+
+/// A designation label-value pair for narrowing capability scope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Designation {
+    pub label: String,
+    pub value: String,
+}
+
 /// Configuration for minting identity tokens.
 #[derive(Debug, Clone)]
 pub struct IdentityConfig {
@@ -137,8 +157,8 @@ pub struct IdentityConfig {
     pub ttl: i64,
     /// Whether the identity token can be delegated to sub-identities.
     pub delegatable: bool,
-    /// Optional domain restriction.
-    pub domain: Option<String>,
+    /// Optional namespace restriction.
+    pub namespace: Option<String>,
 }
 
 impl Default for IdentityConfig {
@@ -146,7 +166,7 @@ impl Default for IdentityConfig {
         Self {
             ttl: 3600,
             delegatable: false,
-            domain: None,
+            namespace: None,
         }
     }
 }

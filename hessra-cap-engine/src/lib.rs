@@ -7,10 +7,6 @@
 //! - `PolicyBackend` trait for pluggable policy evaluation
 //! - Context tokens for information flow control (taint tracking)
 //! - `CapabilityEngine` that orchestrates minting, verification, and policy evaluation
-//!
-//! The engine delegates token operations to the `hessra-cap-token`,
-//! `hessra-identity-token`, and `hessra-context-token` crates for the
-//! actual cryptographic operations.
 
 pub mod context;
 pub mod engine;
@@ -21,8 +17,8 @@ pub use context::{ContextToken, HessraContext};
 pub use engine::CapabilityEngine;
 pub use error::EngineError;
 pub use types::{
-    CapabilityGrant, IdentityConfig, MintResult, ObjectId, Operation, PolicyBackend,
-    PolicyDecision, SessionConfig, TaintLabel,
+    CapabilityGrant, Designation, IdentityConfig, MintOptions, MintResult, ObjectId, Operation,
+    PolicyBackend, PolicyDecision, SessionConfig, TaintLabel,
 };
 
 // Re-export commonly needed types from token crates

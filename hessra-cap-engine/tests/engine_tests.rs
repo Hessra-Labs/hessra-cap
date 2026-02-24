@@ -1,8 +1,8 @@
 //! Integration tests for the Hessra Capability Engine.
 
 use hessra_cap_engine::{
-    CapabilityEngine, IdentityConfig, ObjectId, Operation, PolicyDecision, SessionConfig,
-    TaintLabel,
+    CapabilityEngine, Designation, IdentityConfig, MintOptions, ObjectId, Operation,
+    PolicyDecision, SessionConfig, TaintLabel, TokenTimeConfig,
 };
 use hessra_cap_policy::CListPolicy;
 
@@ -545,4 +545,238 @@ fn test_full_agent_lifecycle() {
         .expect("Fork context");
     assert!(child_context.has_taint(&TaintLabel::new("PII:SSN")));
     assert!(child_context.has_taint(&TaintLabel::new("PII:email")));
+}
+
+// =========================================================================
+// Mint capability with options (namespace restriction, custom time)
+// =========================================================================
+
+#[test]
+fn test_mint_capability_with_default_options() {
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability_with_options(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            None,
+            MintOptions::default(),
+        )
+        .expect("Should mint with default options");
+
+    engine
+        .verify_capability(
+            &result.token,
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+        )
+        .expect("Should verify");
+}
+
+#[test]
+fn test_mint_capability_with_namespace_restriction() {
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability_with_options(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            None,
+            MintOptions {
+                namespace: Some("myapp.hessra.dev".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("Should mint with namespace");
+
+    // Namespace-restricted token should fail without namespace fact
+    let verify = engine.verify_capability(
+        &result.token,
+        &ObjectId::new("tool:file-read"),
+        &Operation::new("invoke"),
+    );
+    assert!(verify.is_err(), "Should fail without namespace in verifier");
+}
+
+#[test]
+fn test_mint_capability_with_custom_time() {
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability_with_options(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            None,
+            MintOptions {
+                time_config: Some(TokenTimeConfig {
+                    start_time: None,
+                    duration: 600,
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("Should mint with custom time");
+
+    engine
+        .verify_capability(
+            &result.token,
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+        )
+        .expect("Should verify with custom time");
+}
+
+#[test]
+fn test_mint_capability_with_options_denied() {
+    let engine = test_engine();
+
+    let result = engine.mint_capability_with_options(
+        &ObjectId::new("agent:openclaw"),
+        &ObjectId::new("tool:nonexistent"),
+        &Operation::new("invoke"),
+        None,
+        MintOptions::default(),
+    );
+
+    assert!(result.is_err(), "Should be denied for unknown target");
+}
+
+#[test]
+fn test_mint_capability_with_options_auto_taints() {
+    let engine = test_engine();
+
+    let context = engine
+        .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
+        .expect("Should mint context");
+
+    let result = engine
+        .mint_capability_with_options(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("data:user-ssn"),
+            &Operation::new("read"),
+            Some(&context),
+            MintOptions::default(),
+        )
+        .expect("Should mint for classified data");
+
+    let updated_context = result.context.expect("Should have updated context");
+    assert!(updated_context.has_taint(&TaintLabel::new("PII:SSN")));
+}
+
+// =========================================================================
+// Designation attenuation
+// =========================================================================
+
+#[test]
+fn test_attenuate_with_designations() {
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            None,
+        )
+        .expect("Should mint capability");
+
+    let designations = vec![Designation {
+        label: "tenant_id".to_string(),
+        value: "t-123".to_string(),
+    }];
+
+    let attenuated = engine
+        .attenuate_with_designations(&result.token, &designations)
+        .expect("Should attenuate with designations");
+
+    // Verify with matching designation
+    engine
+        .verify_designated_capability(
+            &attenuated,
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            &designations,
+        )
+        .expect("Should verify with matching designation");
+
+    // Verify without designation should fail
+    let verify = engine.verify_capability(
+        &attenuated,
+        &ObjectId::new("tool:file-read"),
+        &Operation::new("invoke"),
+    );
+    assert!(verify.is_err(), "Should fail without designation");
+}
+
+#[test]
+fn test_mint_designated_capability() {
+    let engine = test_engine();
+
+    let designations = vec![
+        Designation {
+            label: "tenant_id".to_string(),
+            value: "t-123".to_string(),
+        },
+        Designation {
+            label: "user_id".to_string(),
+            value: "u-456".to_string(),
+        },
+    ];
+
+    let result = engine
+        .mint_designated_capability(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            &designations,
+            None,
+        )
+        .expect("Should mint designated capability");
+
+    // Verify with both designations
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            &designations,
+        )
+        .expect("Should verify designated capability");
+}
+
+#[test]
+fn test_verify_designated_capability_wrong_designation() {
+    let engine = test_engine();
+
+    let designations = vec![Designation {
+        label: "tenant_id".to_string(),
+        value: "t-123".to_string(),
+    }];
+
+    let result = engine
+        .mint_designated_capability(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            &designations,
+            None,
+        )
+        .expect("Should mint designated capability");
+
+    // Verify with wrong designation
+    let wrong_designations = vec![Designation {
+        label: "tenant_id".to_string(),
+        value: "t-999".to_string(),
+    }];
+
+    let verify = engine.verify_designated_capability(
+        &result.token,
+        &ObjectId::new("tool:file-read"),
+        &Operation::new("invoke"),
+        &wrong_designations,
+    );
+    assert!(verify.is_err(), "Should fail with wrong designation");
 }

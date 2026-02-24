@@ -1,14 +1,14 @@
 //! The capability engine: orchestrates policy evaluation, token minting, and verification.
 
-use hessra_cap_token::{CapabilityVerifier, HessraCapability};
+use hessra_cap_token::{CapabilityVerifier, DesignationBuilder, HessraCapability};
 use hessra_identity_token::{HessraIdentity, IdentityVerifier, verify_bearer_token};
 use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 
 use crate::context::{self, ContextToken, HessraContext};
 use crate::error::EngineError;
 use crate::types::{
-    CapabilityGrant, IdentityConfig, MintResult, ObjectId, Operation, PolicyBackend,
-    PolicyDecision, SessionConfig, TaintLabel,
+    CapabilityGrant, Designation, IdentityConfig, MintOptions, MintResult, ObjectId, Operation,
+    PolicyBackend, PolicyDecision, SessionConfig, TaintLabel,
 };
 
 /// The Hessra Capability Engine.
@@ -168,6 +168,179 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         .map_err(EngineError::Token)
     }
 
+    /// Mint a capability token with additional restrictions.
+    ///
+    /// Like `mint_capability`, but supports namespace restriction and custom time config.
+    /// This is useful when the caller needs to propagate namespace restrictions or
+    /// control token lifetime.
+    pub fn mint_capability_with_options(
+        &self,
+        subject: &ObjectId,
+        target: &ObjectId,
+        operation: &Operation,
+        context: Option<&ContextToken>,
+        options: MintOptions,
+    ) -> Result<MintResult, EngineError> {
+        // Step 1: Evaluate policy
+        let decision = self.evaluate(subject, target, operation, context);
+        match &decision {
+            PolicyDecision::Granted => {}
+            PolicyDecision::Denied { reason } => {
+                return Err(EngineError::CapabilityDenied {
+                    subject: subject.clone(),
+                    target: target.clone(),
+                    operation: operation.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            PolicyDecision::DeniedByTaint {
+                label,
+                blocked_target,
+            } => {
+                return Err(EngineError::TaintRestriction {
+                    label: label.clone(),
+                    target: blocked_target.clone(),
+                });
+            }
+        }
+
+        // Step 2: Mint the token with options
+        let time_config = options.time_config.unwrap_or_default();
+        let mut builder = HessraCapability::new(
+            subject.as_str().to_string(),
+            target.as_str().to_string(),
+            operation.as_str().to_string(),
+            time_config,
+        );
+
+        if let Some(namespace) = options.namespace {
+            builder = builder.namespace_restricted(namespace);
+        }
+
+        let token = builder
+            .issue(&self.keypair)
+            .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
+
+        // Step 3: Auto-apply taint if the target has data classifications
+        let updated_context = if let Some(ctx) = context {
+            let classifications = self.policy.classification(target);
+            if classifications.is_empty() {
+                Some(ctx.clone())
+            } else {
+                Some(context::add_taint_block(
+                    ctx,
+                    &classifications,
+                    target,
+                    &self.keypair,
+                )?)
+            }
+        } else {
+            None
+        };
+
+        Ok(MintResult {
+            token,
+            context: updated_context,
+        })
+    }
+
+    // =========================================================================
+    // Direct token issuance (no policy evaluation)
+    // =========================================================================
+
+    /// Issue a capability token directly, without policy evaluation.
+    ///
+    /// Use this when the caller has already performed authorization checks
+    /// through its own mechanisms (e.g., enterprise RBAC, custom domain logic).
+    /// For the fully-managed path that includes policy evaluation, use
+    /// `mint_capability` or `mint_capability_with_options` instead.
+    pub fn issue_capability(
+        &self,
+        subject: &ObjectId,
+        target: &ObjectId,
+        operation: &Operation,
+        options: MintOptions,
+    ) -> Result<String, EngineError> {
+        let time_config = options.time_config.unwrap_or_default();
+        let mut builder = HessraCapability::new(
+            subject.as_str().to_string(),
+            target.as_str().to_string(),
+            operation.as_str().to_string(),
+            time_config,
+        );
+
+        if let Some(namespace) = options.namespace {
+            builder = builder.namespace_restricted(namespace);
+        }
+
+        builder
+            .issue(&self.keypair)
+            .map_err(|e| EngineError::TokenOperation(format!("failed to issue capability: {e}")))
+    }
+
+    // =========================================================================
+    // Designation attenuation
+    // =========================================================================
+
+    /// Attenuate a capability token with designations.
+    ///
+    /// Adds designation checks to narrow the token's scope to specific
+    /// object instances. The verifier must provide matching designation facts.
+    pub fn attenuate_with_designations(
+        &self,
+        token: &str,
+        designations: &[Designation],
+    ) -> Result<String, EngineError> {
+        let mut builder = DesignationBuilder::from_base64(token.to_string(), self.keypair.public())
+            .map_err(EngineError::Token)?;
+
+        for d in designations {
+            builder = builder.designate(d.label.clone(), d.value.clone());
+        }
+
+        builder.attenuate_base64().map_err(EngineError::Token)
+    }
+
+    /// Convenience: mint a capability and immediately attenuate with designations.
+    pub fn mint_designated_capability(
+        &self,
+        subject: &ObjectId,
+        target: &ObjectId,
+        operation: &Operation,
+        designations: &[Designation],
+        context: Option<&ContextToken>,
+    ) -> Result<MintResult, EngineError> {
+        let mut result = self.mint_capability(subject, target, operation, context)?;
+
+        if !designations.is_empty() {
+            result.token = self.attenuate_with_designations(&result.token, designations)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Verify a capability token that includes designation checks.
+    pub fn verify_designated_capability(
+        &self,
+        token: &str,
+        target: &ObjectId,
+        operation: &Operation,
+        designations: &[Designation],
+    ) -> Result<(), EngineError> {
+        let mut verifier = CapabilityVerifier::new(
+            token.to_string(),
+            self.keypair.public(),
+            target.as_str().to_string(),
+            operation.as_str().to_string(),
+        );
+
+        for d in designations {
+            verifier = verifier.with_designation(d.label.clone(), d.value.clone());
+        }
+
+        verifier.verify().map_err(EngineError::Token)
+    }
+
     // =========================================================================
     // Identity tokens
     // =========================================================================
@@ -186,8 +359,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         let mut builder = HessraIdentity::new(subject.as_str().to_string(), time_config)
             .delegatable(config.delegatable);
 
-        if let Some(domain) = config.domain {
-            builder = builder.domain_restricted(domain);
+        if let Some(namespace) = config.namespace {
+            builder = builder.namespace_restricted(namespace);
         }
 
         builder
