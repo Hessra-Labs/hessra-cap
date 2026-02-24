@@ -1,7 +1,7 @@
 //! The capability engine: orchestrates policy evaluation, token minting, and verification.
 
 use hessra_cap_token::{CapabilityVerifier, DesignationBuilder, HessraCapability};
-use hessra_identity_token::{HessraIdentity, IdentityVerifier, verify_bearer_token};
+use hessra_identity_token::{HessraIdentity, IdentityVerifier};
 use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 
 use crate::context::{self, ContextToken, HessraContext};
@@ -373,7 +373,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// This verifies the token as a bearer token (no specific identity required).
     pub fn authenticate(&self, token: &str) -> Result<ObjectId, EngineError> {
         // Verify the token is valid
-        verify_bearer_token(token.to_string(), self.keypair.public())
+        IdentityVerifier::new(token.to_string(), self.keypair.public())
+            .verify()
             .map_err(|e| EngineError::Identity(format!("authentication failed: {e}")))?;
 
         // Inspect the token to extract the subject
