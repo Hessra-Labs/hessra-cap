@@ -443,7 +443,6 @@ dependencies = [
 name = "hessra-cap-engine"
 version = "0.1.0"
 dependencies = [
- "hessra-cap-policy",
  "hessra-cap-token",
  "hessra-context-token",
  "hessra-identity-token",

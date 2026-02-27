@@ -1,10 +1,9 @@
 //! Integration tests for the Hessra Capability Engine.
 
-use hessra_cap_engine::{
-    CapabilityEngine, Designation, IdentityConfig, MintOptions, ObjectId, Operation,
+use hessra_cap::{
+    CapabilityEngine, CListPolicy, Designation, IdentityConfig, MintOptions, ObjectId, Operation,
     PolicyDecision, SessionConfig, TaintLabel, TokenTimeConfig,
 };
-use hessra_cap_policy::CListPolicy;
 
 fn test_engine() -> CapabilityEngine<CListPolicy> {
     let policy = CListPolicy::from_toml(

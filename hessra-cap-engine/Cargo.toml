@@ -19,5 +19,4 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-hessra-cap-policy = { workspace = true }
 hex = { workspace = true }
