@@ -1,7 +1,7 @@
 //! Integration tests for the Hessra Capability Engine.
 
 use hessra_cap::{
-    CapabilityEngine, CListPolicy, Designation, IdentityConfig, MintOptions, ObjectId, Operation,
+    CListPolicy, CapabilityEngine, Designation, IdentityConfig, MintOptions, ObjectId, Operation,
     PolicyDecision, SessionConfig, TaintLabel, TokenTimeConfig,
 };
 

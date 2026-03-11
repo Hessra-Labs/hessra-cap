@@ -437,6 +437,9 @@ version = "0.1.1"
 dependencies = [
  "hessra-cap-engine",
  "hessra-cap-policy",
+ "hessra-cap-token",
+ "hessra-identity-token",
+ "hessra-token-core",
 ]
 
 [[package]]

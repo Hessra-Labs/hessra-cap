@@ -13,3 +13,16 @@ categories = ["authentication"]
 [dependencies]
 hessra-cap-engine = { workspace = true }
 hessra-cap-policy = { workspace = true }
+
+[dev-dependencies]
+hessra-cap-token = { workspace = true }
+hessra-identity-token = { workspace = true }
+hessra-token-core = { workspace = true }
+
+[[example]]
+name = "webapp_auth"
+path = "examples/webapp_auth.rs"
+
+[[example]]
+name = "agent_harness"
+path = "examples/agent_harness.rs"
