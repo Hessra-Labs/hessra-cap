@@ -433,7 +433,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hessra-cap"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hessra-cap-engine",
  "hessra-cap-policy",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-engine"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hessra-cap-token",
  "hessra-context-token",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-policy"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "glob-match",
  "hessra-cap-engine",
