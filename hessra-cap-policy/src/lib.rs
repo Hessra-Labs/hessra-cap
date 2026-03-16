@@ -3,7 +3,7 @@
 //! Default CList (Capability List) policy backend for the Hessra capability engine.
 //!
 //! Provides TOML-based configuration for defining objects, their capability spaces,
-//! data classifications, and taint restriction rules.
+//! data classifications, and exposure restriction rules.
 
 mod config;
 mod matching;

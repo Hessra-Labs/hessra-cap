@@ -1,6 +1,6 @@
 //! Error types for the capability engine.
 
-use crate::types::{ObjectId, Operation, TaintLabel};
+use crate::types::{ExposureLabel, ObjectId, Operation};
 use thiserror::Error;
 
 /// Errors from the capability engine.
@@ -15,9 +15,12 @@ pub enum EngineError {
         reason: String,
     },
 
-    /// Capability request denied due to taint restriction.
-    #[error("capability denied by taint: label '{label}' blocks access to '{target}'")]
-    TaintRestriction { label: TaintLabel, target: ObjectId },
+    /// Capability request denied due to exposure restriction.
+    #[error("capability denied by exposure: label '{label}' blocks access to '{target}'")]
+    ExposureRestriction {
+        label: ExposureLabel,
+        target: ObjectId,
+    },
 
     /// Identity token operation failed.
     #[error("identity error: {0}")]

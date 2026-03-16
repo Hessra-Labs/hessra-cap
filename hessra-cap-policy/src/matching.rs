@@ -1,4 +1,4 @@
-//! Glob-style pattern matching for taint labels and object IDs.
+//! Glob-style pattern matching for exposure labels and object IDs.
 
 use glob_match::glob_match;
 

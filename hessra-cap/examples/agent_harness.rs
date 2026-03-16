@@ -4,7 +4,7 @@
 //! and its tools. Every tool invocation goes through the harness, which:
 //!
 //! 1. Evaluates policy (does the agent have this capability?)
-//! 2. Checks taint restrictions (has the agent seen data that blocks this tool?)
+//! 2. Checks exposure restrictions (has the agent seen data that blocks this tool?)
 //! 3. Mints a short-lived capability token (proof of authorization for the tool runtime)
 //! 4. Updates the session context (tracks what data the agent has been exposed to)
 //!
@@ -14,7 +14,7 @@
 //!   - Ability to exfiltrate (send email, make web requests)
 //!
 //! Capability security with information flow control prevents this: once the agent
-//! reads sensitive data, taint labels are added to its session context, and the
+//! reads sensitive data, exposure labels are added to its session context, and the
 //! policy engine blocks access to exfiltration tools.
 //!
 //! Run with: `cargo run --example agent_harness -p hessra-cap`
@@ -25,8 +25,8 @@
 //!   same trust domain.
 
 use hessra_cap::{
-    CListPolicy, CapabilityEngine, ContextToken, EngineError, ObjectId, Operation, SessionConfig,
-    TaintLabel,
+    CListPolicy, CapabilityEngine, ContextToken, EngineError, ExposureLabel, ObjectId, Operation,
+    SessionConfig,
 };
 
 /// Lightweight capability harness between an AI agent and its tools.
@@ -34,7 +34,7 @@ use hessra_cap::{
 /// The harness borrows a shared `CapabilityEngine` so that parent and
 /// sub-agent sessions operate in the same trust domain (same signing keys,
 /// same policy). Each harness instance manages its own context token, which
-/// accumulates taint labels as the agent accesses classified data.
+/// accumulates exposure labels as the agent accesses classified data.
 struct AgentHarness<'e> {
     engine: &'e CapabilityEngine<CListPolicy>,
     agent_id: ObjectId,
@@ -58,7 +58,7 @@ impl<'e> AgentHarness<'e> {
     /// Request a capability to invoke a tool.
     ///
     /// Returns the capability token if granted. The harness automatically
-    /// updates its internal context with any taint from the tool's data
+    /// updates its internal context with any exposure from the tool's data
     /// classification.
     fn request_tool(&mut self, tool: &ObjectId) -> Result<String, EngineError> {
         let result = self.engine.mint_capability(
@@ -75,7 +75,7 @@ impl<'e> AgentHarness<'e> {
 
     /// Request a capability to read a data source.
     ///
-    /// Reading classified data adds taint labels to the session context.
+    /// Reading classified data adds exposure labels to the session context.
     fn request_data(&mut self, data_source: &ObjectId) -> Result<String, EngineError> {
         let result = self.engine.mint_capability(
             &self.agent_id,
@@ -101,16 +101,16 @@ impl<'e> AgentHarness<'e> {
             .is_granted()
     }
 
-    /// Get the current taint labels on this session.
-    fn taint_labels(&self) -> &[TaintLabel] {
-        self.context.taint_labels()
+    /// Get the current exposure labels on this session.
+    fn exposure_labels(&self) -> &[ExposureLabel] {
+        self.context.exposure_labels()
     }
 
-    /// Fork a sub-agent session that inherits this agent's taint.
+    /// Fork a sub-agent session that inherits this agent's exposure.
     ///
     /// The sub-agent shares the same engine (same trust domain, same signing
     /// keys) but gets a forked context with all of the parent's accumulated
-    /// taint. This prevents contamination laundering: a tainted agent cannot
+    /// exposure. This prevents contamination laundering: an exposed agent cannot
     /// spawn a clean sub-agent to bypass restrictions.
     fn fork(&self, child_id: ObjectId) -> Result<AgentHarness<'e>, EngineError> {
         let child_context =
@@ -140,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   - user-ssn is classified as PII:SSN
     //   - public-docs has no classification
     //
-    // Taint rules:
+    // Exposure rules:
     //   - PII:SSN blocks tool:email and tool:web-search
     //   - PII:* (any PII) blocks tool:email
 
@@ -169,11 +169,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "data:user-profile" = ["PII:email", "PII:address"]
         "data:user-ssn" = ["PII:SSN"]
 
-        [[taint_rules]]
+        [[exposure_rules]]
         labels = ["PII:SSN"]
         blocks = ["tool:email", "tool:web-search"]
 
-        [[taint_rules]]
+        [[exposure_rules]]
         labels = ["PII:*"]
         blocks = ["tool:email"]
     "#,
@@ -188,9 +188,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Phase 1: Clean session -- all tools available
     // =========================================================================
 
-    println!("--- Phase 1: Clean session (no taint) ---");
-    assert!(harness.taint_labels().is_empty());
-    println!("Taint: (none)");
+    println!("--- Phase 1: Clean session (no exposure) ---");
+    assert!(harness.exposure_labels().is_empty());
+    println!("Exposure: (none)");
     println!(
         "tool:file-read   {}",
         status(harness.can_invoke(&ObjectId::new("tool:file-read")))
@@ -214,26 +214,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Invoked tool:web-search (token verified by tool runtime)\n");
 
     // =========================================================================
-    // Phase 2: Read public docs -- no taint applied
+    // Phase 2: Read public docs -- no exposure applied
     // =========================================================================
 
     println!("--- Phase 2: Read public docs (unclassified) ---");
     let _cap = harness.request_data(&ObjectId::new("data:public-docs"))?;
     println!("Read data:public-docs");
-    assert!(harness.taint_labels().is_empty());
-    println!("Taint: (none) -- unclassified data does not taint the session\n");
+    assert!(harness.exposure_labels().is_empty());
+    println!("Exposure: (none) -- unclassified data does not add exposure\n");
 
     // =========================================================================
-    // Phase 3: Read user profile -- PII taint applied
+    // Phase 3: Read user profile -- PII exposure applied
     // =========================================================================
 
-    println!("--- Phase 3: Read user profile (PII taint) ---");
+    println!("--- Phase 3: Read user profile (PII exposure) ---");
     let _cap = harness.request_data(&ObjectId::new("data:user-profile"))?;
     println!("Read data:user-profile");
     println!(
-        "Taint: {:?}",
+        "Exposure: {:?}",
         harness
-            .taint_labels()
+            .exposure_labels()
             .iter()
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
@@ -250,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         status(harness.can_invoke(&ObjectId::new("tool:web-search")))
     );
     println!(
-        "tool:email       {} (blocked by PII:* taint rule)",
+        "tool:email       {} (blocked by PII:* exposure rule)",
         status(harness.can_invoke(&ObjectId::new("tool:email")))
     );
     println!();
@@ -263,9 +263,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _cap = harness.request_data(&ObjectId::new("data:user-ssn"))?;
     println!("Read data:user-ssn");
     println!(
-        "Taint: {:?}",
+        "Exposure: {:?}",
         harness
-            .taint_labels()
+            .exposure_labels()
             .iter()
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
@@ -277,25 +277,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         status(harness.can_invoke(&ObjectId::new("tool:file-read")))
     );
     println!(
-        "tool:web-search  {} (blocked by PII:SSN taint rule)",
+        "tool:web-search  {} (blocked by PII:SSN exposure rule)",
         status(harness.can_invoke(&ObjectId::new("tool:web-search")))
     );
     println!(
-        "tool:email       {} (blocked by PII:SSN + PII:* taint rules)",
+        "tool:email       {} (blocked by PII:SSN + PII:* exposure rules)",
         status(harness.can_invoke(&ObjectId::new("tool:email")))
     );
 
     // Attempting to mint the email capability gives a structured error.
     match harness.request_tool(&ObjectId::new("tool:email")) {
-        Err(EngineError::TaintRestriction { label, target }) => {
-            println!("Blocked: taint '{label}' prevents access to '{target}'");
+        Err(EngineError::ExposureRestriction { label, target }) => {
+            println!("Blocked: exposure '{label}' prevents access to '{target}'");
         }
-        other => panic!("Expected TaintRestriction, got: {other:?}"),
+        other => panic!("Expected ExposureRestriction, got: {other:?}"),
     }
     println!("The lethal trifecta (tools + data + exfiltration) is prevented.\n");
 
     // =========================================================================
-    // Phase 5: Sub-agent forking with inherited taint
+    // Phase 5: Sub-agent forking with inherited exposure
     // =========================================================================
 
     println!("--- Phase 5: Sub-agent forking ---");
@@ -303,22 +303,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Forked sub-agent: {}", sub_harness.agent_id.as_str());
     println!(
-        "Inherited taint: {:?}",
+        "Inherited exposure: {:?}",
         sub_harness
-            .taint_labels()
+            .exposure_labels()
             .iter()
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
     );
 
     // The sub-agent has a narrower capability set (no email at all in policy)
-    // AND inherits the parent's taint. Even its allowed tools are restricted.
+    // AND inherits the parent's exposure. Even its allowed tools are restricted.
     println!(
         "Sub-agent tool:file-read   {}",
         status(sub_harness.can_invoke(&ObjectId::new("tool:file-read")))
     );
     println!(
-        "Sub-agent tool:web-search  {} (inherited PII:SSN taint)",
+        "Sub-agent tool:web-search  {} (inherited PII:SSN exposure)",
         status(sub_harness.can_invoke(&ObjectId::new("tool:web-search")))
     );
     println!(

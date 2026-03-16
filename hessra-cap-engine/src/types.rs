@@ -74,15 +74,15 @@ impl From<String> for Operation {
     }
 }
 
-/// Taint label for information flow control.
+/// Exposure label for information flow control.
 ///
-/// Taint labels are hierarchical strings representing data sensitivity classifications:
+/// Exposure labels are hierarchical strings representing data sensitivity classifications:
 /// `PII:SSN`, `PHI:diagnosis`, `financial:account-number`.
 /// Wildcard matching (e.g., `PII:*`) is supported in policy rules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TaintLabel(pub String);
+pub struct ExposureLabel(pub String);
 
-impl TaintLabel {
+impl ExposureLabel {
     pub fn new(label: impl Into<String>) -> Self {
         Self(label.into())
     }
@@ -92,19 +92,19 @@ impl TaintLabel {
     }
 }
 
-impl std::fmt::Display for TaintLabel {
+impl std::fmt::Display for ExposureLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl From<&str> for TaintLabel {
+impl From<&str> for ExposureLabel {
     fn from(s: &str) -> Self {
         Self(s.to_string())
     }
 }
 
-impl From<String> for TaintLabel {
+impl From<String> for ExposureLabel {
     fn from(s: String) -> Self {
         Self(s)
     }
@@ -122,11 +122,11 @@ pub struct CapabilityGrant {
 /// Result of minting a capability token.
 ///
 /// Contains the capability token and optionally an updated context token
-/// with taint labels applied if the target was a classified data source.
+/// with exposure labels applied if the target was a classified data source.
 pub struct MintResult {
     /// The minted capability token (base64-encoded).
     pub token: String,
-    /// Updated context token with taint labels, if a context was provided
+    /// Updated context token with exposure labels, if a context was provided
     /// and the target had data classifications.
     pub context: Option<crate::ContextToken>,
 }
@@ -191,9 +191,9 @@ pub enum PolicyDecision {
     Granted,
     /// The capability request is denied by policy (object doesn't hold this capability).
     Denied { reason: String },
-    /// The capability request is denied due to taint restrictions.
-    DeniedByTaint {
-        label: TaintLabel,
+    /// The capability request is denied due to exposure restrictions.
+    DeniedByExposure {
+        label: ExposureLabel,
         blocked_target: ObjectId,
     },
 }
@@ -210,20 +210,20 @@ impl PolicyDecision {
 /// The default implementation is the CList backend in `hessra-cap-policy`.
 pub trait PolicyBackend: Send + Sync {
     /// Evaluate whether a subject can access a target with the given operation,
-    /// considering any taint labels from the subject's context.
+    /// considering any exposure labels from the subject's context.
     fn evaluate(
         &self,
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
-        taint_labels: &[TaintLabel],
+        exposure_labels: &[ExposureLabel],
     ) -> PolicyDecision;
 
-    /// Get the data classification (taint labels) for a target.
+    /// Get the data classification (exposure labels) for a target.
     ///
     /// When the engine mints a capability for a classified target, these labels
     /// are automatically added to the subject's context token.
-    fn classification(&self, target: &ObjectId) -> Vec<TaintLabel>;
+    fn classification(&self, target: &ObjectId) -> Vec<ExposureLabel>;
 
     /// List all capability grants for a subject (for introspection and audit).
     fn list_grants(&self, subject: &ObjectId) -> Vec<CapabilityGrant>;

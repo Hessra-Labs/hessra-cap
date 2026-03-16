@@ -20,13 +20,13 @@ pub struct PolicyConfig {
     #[serde(default)]
     pub objects: Vec<ObjectConfig>,
 
-    /// Data classifications: maps target object IDs to taint labels.
+    /// Data classifications: maps target object IDs to exposure labels.
     #[serde(default)]
     pub classifications: HashMap<String, Vec<String>>,
 
-    /// Taint restriction rules.
+    /// Exposure restriction rules.
     #[serde(default)]
-    pub taint_rules: Vec<TaintRuleConfig>,
+    pub exposure_rules: Vec<ExposureRuleConfig>,
 }
 
 /// Configuration for a single object and its capability space.
@@ -72,10 +72,10 @@ pub struct CapabilityConfig {
     pub operations: Vec<String>,
 }
 
-/// A taint restriction rule.
+/// An exposure restriction rule.
 #[derive(Debug, Clone, Deserialize)]
-pub struct TaintRuleConfig {
-    /// Taint labels that trigger this rule. Supports glob patterns (e.g., "PII:*").
+pub struct ExposureRuleConfig {
+    /// Exposure labels that trigger this rule. Supports glob patterns (e.g., "PII:*").
     pub labels: Vec<String>,
 
     /// Match mode: "any" (default) or "all".

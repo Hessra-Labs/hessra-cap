@@ -1,8 +1,8 @@
 //! Integration tests for the Hessra Capability Engine.
 
 use hessra_cap::{
-    CListPolicy, CapabilityEngine, Designation, IdentityConfig, MintOptions, ObjectId, Operation,
-    PolicyDecision, SessionConfig, TaintLabel, TokenTimeConfig,
+    CListPolicy, CapabilityEngine, Designation, ExposureLabel, IdentityConfig, MintOptions,
+    ObjectId, Operation, PolicyDecision, SessionConfig, TokenTimeConfig,
 };
 
 fn test_engine() -> CapabilityEngine<CListPolicy> {
@@ -31,11 +31,11 @@ capabilities = [
 "data:user-profile" = ["PII:email", "PII:address"]
 "data:user-ssn" = ["PII:SSN"]
 
-[[taint_rules]]
+[[exposure_rules]]
 labels = ["PII:SSN"]
 blocks = ["tool:web-search", "tool:email"]
 
-[[taint_rules]]
+[[exposure_rules]]
 labels = ["PII:*"]
 blocks = ["tool:email"]
     "#,
@@ -107,30 +107,30 @@ fn test_verify_wrong_target_fails() {
 }
 
 // =========================================================================
-// Context token and taint tracking
+// Context token and exposure tracking
 // =========================================================================
 
 #[test]
-fn test_mint_context_and_extract_taint() {
+fn test_mint_context_and_extract_exposure() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    assert!(!context.is_tainted());
-    assert!(context.taint_labels().is_empty());
+    assert!(!context.is_exposed());
+    assert!(context.exposure_labels().is_empty());
 }
 
 #[test]
-fn test_auto_taint_on_classified_data() {
+fn test_auto_exposure_on_classified_data() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    // Mint capability for classified data -- should auto-taint the context
+    // Mint capability for classified data -- should auto-expose the context
     let result = engine
         .mint_capability(
             &ObjectId::new("agent:openclaw"),
@@ -141,12 +141,12 @@ fn test_auto_taint_on_classified_data() {
         .expect("Should mint capability for SSN");
 
     let updated_context = result.context.expect("Context should be updated");
-    assert!(updated_context.is_tainted());
-    assert!(updated_context.has_taint(&TaintLabel::new("PII:SSN")));
+    assert!(updated_context.is_exposed());
+    assert!(updated_context.has_exposure(&ExposureLabel::new("PII:SSN")));
 }
 
 #[test]
-fn test_no_taint_for_unclassified_data() {
+fn test_no_exposure_for_unclassified_data() {
     let engine = test_engine();
 
     let context = engine
@@ -164,18 +164,18 @@ fn test_no_taint_for_unclassified_data() {
         .expect("Should mint capability for public info");
 
     let updated_context = result.context.expect("Context should be returned");
-    assert!(!updated_context.is_tainted());
+    assert!(!updated_context.is_exposed());
 }
 
 #[test]
-fn test_taint_blocks_subsequent_capability() {
+fn test_exposure_blocks_subsequent_capability() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    // Step 1: web-search should work before taint
+    // Step 1: web-search should work before exposure
     let result = engine.mint_capability(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:web-search"),
@@ -184,7 +184,7 @@ fn test_taint_blocks_subsequent_capability() {
     );
     assert!(result.is_ok());
 
-    // Step 2: Read SSN data (auto-taints with PII:SSN)
+    // Step 2: Read SSN data (auto-exposes with PII:SSN)
     let result = engine
         .mint_capability(
             &ObjectId::new("agent:openclaw"),
@@ -194,84 +194,84 @@ fn test_taint_blocks_subsequent_capability() {
         )
         .expect("Should mint SSN capability");
 
-    let tainted_context = result.context.expect("Should have updated context");
+    let exposed_context = result.context.expect("Should have updated context");
 
-    // Step 3: web-search should be DENIED with PII:SSN taint
+    // Step 3: web-search should be DENIED with PII:SSN exposure
     let result = engine.mint_capability(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:web-search"),
         &Operation::new("invoke"),
-        Some(&tainted_context),
+        Some(&exposed_context),
     );
     assert!(result.is_err());
 }
 
 #[test]
-fn test_taint_allows_non_blocked_capabilities() {
+fn test_exposure_allows_non_blocked_capabilities() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    // Taint with SSN
-    let tainted = engine
-        .add_taint(&context, &ObjectId::new("data:user-ssn"))
-        .expect("Should add taint");
+    // Expose with SSN
+    let exposed = engine
+        .add_exposure(&context, &ObjectId::new("data:user-ssn"))
+        .expect("Should add exposure");
 
-    // file-read should still work with SSN taint
+    // file-read should still work with SSN exposure
     let result = engine.mint_capability(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:file-read"),
         &Operation::new("invoke"),
-        Some(&tainted),
+        Some(&exposed),
     );
     assert!(result.is_ok());
 }
 
 #[test]
-fn test_cumulative_taint() {
+fn test_cumulative_exposure() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    // Add profile taint (PII:email, PII:address)
-    let tainted = engine
-        .add_taint(&context, &ObjectId::new("data:user-profile"))
-        .expect("Should add profile taint");
+    // Add profile exposure (PII:email, PII:address)
+    let exposed = engine
+        .add_exposure(&context, &ObjectId::new("data:user-profile"))
+        .expect("Should add profile exposure");
 
-    assert_eq!(tainted.taint_labels().len(), 2);
+    assert_eq!(exposed.exposure_labels().len(), 2);
 
-    // Add SSN taint (PII:SSN) -- should accumulate
-    let more_tainted = engine
-        .add_taint(&tainted, &ObjectId::new("data:user-ssn"))
-        .expect("Should add SSN taint");
+    // Add SSN exposure (PII:SSN) -- should accumulate
+    let more_exposed = engine
+        .add_exposure(&exposed, &ObjectId::new("data:user-ssn"))
+        .expect("Should add SSN exposure");
 
-    assert_eq!(more_tainted.taint_labels().len(), 3);
-    assert!(more_tainted.has_taint(&TaintLabel::new("PII:email")));
-    assert!(more_tainted.has_taint(&TaintLabel::new("PII:address")));
-    assert!(more_tainted.has_taint(&TaintLabel::new("PII:SSN")));
+    assert_eq!(more_exposed.exposure_labels().len(), 3);
+    assert!(more_exposed.has_exposure(&ExposureLabel::new("PII:email")));
+    assert!(more_exposed.has_exposure(&ExposureLabel::new("PII:address")));
+    assert!(more_exposed.has_exposure(&ExposureLabel::new("PII:SSN")));
 }
 
 #[test]
-fn test_manual_taint_label() {
+fn test_manual_exposure_label() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    let tainted = engine
-        .add_taint_label(
+    let exposed = engine
+        .add_exposure_label(
             &context,
-            TaintLabel::new("custom:sensitive"),
+            ExposureLabel::new("custom:sensitive"),
             &ObjectId::new("external-system"),
         )
-        .expect("Should add custom taint");
+        .expect("Should add custom exposure");
 
-    assert!(tainted.has_taint(&TaintLabel::new("custom:sensitive")));
+    assert!(exposed.has_exposure(&ExposureLabel::new("custom:sensitive")));
 }
 
 // =========================================================================
@@ -279,30 +279,30 @@ fn test_manual_taint_label() {
 // =========================================================================
 
 #[test]
-fn test_fork_context_inherits_taint() {
+fn test_fork_context_inherits_exposure() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    // Taint the parent
-    let tainted = engine
-        .add_taint(&context, &ObjectId::new("data:user-ssn"))
-        .expect("Should add taint");
+    // Expose the parent
+    let exposed = engine
+        .add_exposure(&context, &ObjectId::new("data:user-ssn"))
+        .expect("Should add exposure");
 
     // Fork for sub-agent
     let child_context = engine
         .fork_context(
-            &tainted,
+            &exposed,
             &ObjectId::new("agent:openclaw:subtask-1"),
             SessionConfig::default(),
         )
         .expect("Should fork context");
 
-    // Child should inherit parent's taint
-    assert!(child_context.is_tainted());
-    assert!(child_context.has_taint(&TaintLabel::new("PII:SSN")));
+    // Child should inherit parent's exposure
+    assert!(child_context.is_exposed());
+    assert!(child_context.has_exposure(&ExposureLabel::new("PII:SSN")));
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn test_fork_clean_context() {
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    // Fork without taint
+    // Fork without exposure
     let child_context = engine
         .fork_context(
             &context,
@@ -322,7 +322,7 @@ fn test_fork_clean_context() {
         )
         .expect("Should fork context");
 
-    assert!(!child_context.is_tainted());
+    assert!(!child_context.is_exposed());
 }
 
 // =========================================================================
@@ -393,25 +393,25 @@ fn test_evaluate_without_minting() {
 }
 
 #[test]
-fn test_evaluate_with_taint() {
+fn test_evaluate_with_exposure() {
     let engine = test_engine();
 
     let context = engine
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Should mint context");
 
-    let tainted = engine
-        .add_taint(&context, &ObjectId::new("data:user-ssn"))
-        .expect("Should add taint");
+    let exposed = engine
+        .add_exposure(&context, &ObjectId::new("data:user-ssn"))
+        .expect("Should add exposure");
 
     let decision = engine.evaluate(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:web-search"),
         &Operation::new("invoke"),
-        Some(&tainted),
+        Some(&exposed),
     );
     assert!(!decision.is_granted());
-    assert!(matches!(decision, PolicyDecision::DeniedByTaint { .. }));
+    assert!(matches!(decision, PolicyDecision::DeniedByExposure { .. }));
 }
 
 // =========================================================================
@@ -445,7 +445,7 @@ fn test_full_agent_lifecycle() {
         .mint_context(&ObjectId::new("agent:openclaw"), SessionConfig::default())
         .expect("Session start");
 
-    // 2. Agent reads public data (no taint)
+    // 2. Agent reads public data (no exposure)
     let result = engine
         .mint_capability(
             &ObjectId::new("agent:openclaw"),
@@ -455,9 +455,9 @@ fn test_full_agent_lifecycle() {
         )
         .expect("Read public info");
     let context = result.context.expect("Context returned");
-    assert!(!context.is_tainted());
+    assert!(!context.is_exposed());
 
-    // 3. Agent uses web search (should work, no taint)
+    // 3. Agent uses web search (should work, no exposure)
     let result = engine
         .mint_capability(
             &ObjectId::new("agent:openclaw"),
@@ -468,7 +468,7 @@ fn test_full_agent_lifecycle() {
         .expect("Web search should work");
     let context = result.context.expect("Context returned");
 
-    // 4. Agent reads user profile (tainted with PII:email, PII:address)
+    // 4. Agent reads user profile (exposed with PII:email, PII:address)
     let result = engine
         .mint_capability(
             &ObjectId::new("agent:openclaw"),
@@ -477,8 +477,8 @@ fn test_full_agent_lifecycle() {
             Some(&context),
         )
         .expect("Read user profile");
-    let context = result.context.expect("Context returned with taint");
-    assert!(context.has_taint(&TaintLabel::new("PII:email")));
+    let context = result.context.expect("Context returned with exposure");
+    assert!(context.has_exposure(&ExposureLabel::new("PII:email")));
 
     // 5. Email is now blocked (PII:* blocks tool:email)
     let result = engine.mint_capability(
@@ -487,7 +487,7 @@ fn test_full_agent_lifecycle() {
         &Operation::new("invoke"),
         Some(&context),
     );
-    assert!(result.is_err(), "Email should be blocked by PII taint");
+    assert!(result.is_err(), "Email should be blocked by PII exposure");
 
     // 6. Web search still works (only PII:SSN blocks it, not PII:email)
     let result = engine.mint_capability(
@@ -498,10 +498,10 @@ fn test_full_agent_lifecycle() {
     );
     assert!(
         result.is_ok(),
-        "Web search should still work with PII:email taint"
+        "Web search should still work with PII:email exposure"
     );
 
-    // 7. Agent reads SSN (tainted with PII:SSN)
+    // 7. Agent reads SSN (exposed with PII:SSN)
     let result = engine
         .mint_capability(
             &ObjectId::new("agent:openclaw"),
@@ -510,8 +510,8 @@ fn test_full_agent_lifecycle() {
             Some(&context),
         )
         .expect("Read SSN");
-    let context = result.context.expect("Context returned with more taint");
-    assert!(context.has_taint(&TaintLabel::new("PII:SSN")));
+    let context = result.context.expect("Context returned with more exposure");
+    assert!(context.has_exposure(&ExposureLabel::new("PII:SSN")));
 
     // 8. NOW web search is blocked (PII:SSN blocks tool:web-search)
     let result = engine.mint_capability(
@@ -522,7 +522,7 @@ fn test_full_agent_lifecycle() {
     );
     assert!(
         result.is_err(),
-        "Web search should be blocked after SSN taint"
+        "Web search should be blocked after SSN exposure"
     );
 
     // 9. File read still works
@@ -534,7 +534,7 @@ fn test_full_agent_lifecycle() {
     );
     assert!(result.is_ok(), "File read should always work");
 
-    // 10. Fork context for sub-agent -- inherits ALL taint
+    // 10. Fork context for sub-agent -- inherits ALL exposure
     let child_context = engine
         .fork_context(
             &context,
@@ -542,8 +542,8 @@ fn test_full_agent_lifecycle() {
             SessionConfig::default(),
         )
         .expect("Fork context");
-    assert!(child_context.has_taint(&TaintLabel::new("PII:SSN")));
-    assert!(child_context.has_taint(&TaintLabel::new("PII:email")));
+    assert!(child_context.has_exposure(&ExposureLabel::new("PII:SSN")));
+    assert!(child_context.has_exposure(&ExposureLabel::new("PII:email")));
 }
 
 // =========================================================================
@@ -644,7 +644,7 @@ fn test_mint_capability_with_options_denied() {
 }
 
 #[test]
-fn test_mint_capability_with_options_auto_taints() {
+fn test_mint_capability_with_options_auto_exposes() {
     let engine = test_engine();
 
     let context = engine
@@ -662,7 +662,7 @@ fn test_mint_capability_with_options_auto_taints() {
         .expect("Should mint for classified data");
 
     let updated_context = result.context.expect("Should have updated context");
-    assert!(updated_context.has_taint(&TaintLabel::new("PII:SSN")));
+    assert!(updated_context.has_exposure(&ExposureLabel::new("PII:SSN")));
 }
 
 // =========================================================================

@@ -3,25 +3,25 @@
 use std::collections::HashMap;
 
 use hessra_cap_engine::{
-    CapabilityGrant, ObjectId, Operation, PolicyBackend, PolicyDecision, TaintLabel,
+    CapabilityGrant, ExposureLabel, ObjectId, Operation, PolicyBackend, PolicyDecision,
 };
 
-use crate::config::{PolicyConfig, TaintRuleConfig};
+use crate::config::{ExposureRuleConfig, PolicyConfig};
 use crate::matching::matches_pattern;
 
 /// CList (Capability List) policy backend.
 ///
 /// Each object has a capability space listing the targets it can access
 /// and the operations it can perform. Data classifications map targets
-/// to taint labels. Taint rules define which targets are blocked when
-/// specific taint labels are present.
+/// to exposure labels. Exposure rules define which targets are blocked when
+/// specific exposure labels are present.
 pub struct CListPolicy {
     /// Object capability spaces, keyed by object ID.
     objects: HashMap<String, ObjectEntry>,
-    /// Data classifications: target -> taint labels.
+    /// Data classifications: target -> exposure labels.
     classifications: HashMap<String, Vec<String>>,
-    /// Taint restriction rules.
-    taint_rules: Vec<TaintRuleConfig>,
+    /// Exposure restriction rules.
+    exposure_rules: Vec<ExposureRuleConfig>,
 }
 
 struct ObjectEntry {
@@ -57,7 +57,7 @@ impl CListPolicy {
         Self {
             objects,
             classifications: config.classifications,
-            taint_rules: config.taint_rules,
+            exposure_rules: config.exposure_rules,
         }
     }
 
@@ -78,32 +78,32 @@ impl CListPolicy {
         Self {
             objects: HashMap::new(),
             classifications: HashMap::new(),
-            taint_rules: Vec::new(),
+            exposure_rules: Vec::new(),
         }
     }
 
-    /// Check if any taint rule blocks access to a target given the current taint labels.
-    fn check_taint_restrictions(
+    /// Check if any exposure rule blocks access to a target given the current exposure labels.
+    fn check_exposure_restrictions(
         &self,
         target: &str,
-        taint_labels: &[TaintLabel],
-    ) -> Option<(TaintLabel, ObjectId)> {
-        if taint_labels.is_empty() {
+        exposure_labels: &[ExposureLabel],
+    ) -> Option<(ExposureLabel, ObjectId)> {
+        if exposure_labels.is_empty() {
             return None;
         }
 
-        for rule in &self.taint_rules {
+        for rule in &self.exposure_rules {
             let rule_matches = if rule.r#match == "all" {
-                // All label patterns must match at least one taint label
+                // All label patterns must match at least one exposure label
                 rule.labels.iter().all(|pattern| {
-                    taint_labels
+                    exposure_labels
                         .iter()
                         .any(|label| matches_pattern(pattern, label.as_str()))
                 })
             } else {
-                // Any label pattern matches any taint label
+                // Any label pattern matches any exposure label
                 rule.labels.iter().any(|pattern| {
-                    taint_labels
+                    exposure_labels
                         .iter()
                         .any(|label| matches_pattern(pattern, label.as_str()))
                 })
@@ -113,8 +113,8 @@ impl CListPolicy {
                 // Check if the target is in the blocked list
                 for blocked in &rule.blocks {
                     if matches_pattern(blocked, target) {
-                        // Find the first matching taint label for the error
-                        let matching_label = taint_labels
+                        // Find the first matching exposure label for the error
+                        let matching_label = exposure_labels
                             .iter()
                             .find(|label| {
                                 rule.labels
@@ -122,7 +122,7 @@ impl CListPolicy {
                                     .any(|pattern| matches_pattern(pattern, label.as_str()))
                             })
                             .cloned()
-                            .unwrap_or_else(|| TaintLabel::new("unknown"));
+                            .unwrap_or_else(|| ExposureLabel::new("unknown"));
 
                         return Some((matching_label, ObjectId::new(target)));
                     }
@@ -140,13 +140,13 @@ impl PolicyBackend for CListPolicy {
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
-        taint_labels: &[TaintLabel],
+        exposure_labels: &[ExposureLabel],
     ) -> PolicyDecision {
-        // Step 1: Check taint restrictions first
+        // Step 1: Check exposure restrictions first
         if let Some((label, blocked_target)) =
-            self.check_taint_restrictions(target.as_str(), taint_labels)
+            self.check_exposure_restrictions(target.as_str(), exposure_labels)
         {
-            return PolicyDecision::DeniedByTaint {
+            return PolicyDecision::DeniedByExposure {
                 label,
                 blocked_target,
             };
@@ -172,10 +172,15 @@ impl PolicyBackend for CListPolicy {
         }
     }
 
-    fn classification(&self, target: &ObjectId) -> Vec<TaintLabel> {
+    fn classification(&self, target: &ObjectId) -> Vec<ExposureLabel> {
         self.classifications
             .get(target.as_str())
-            .map(|labels| labels.iter().map(|l| TaintLabel::new(l.as_str())).collect())
+            .map(|labels| {
+                labels
+                    .iter()
+                    .map(|l| ExposureLabel::new(l.as_str()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -230,11 +235,11 @@ capabilities = [
 "data:user-profile" = ["PII:email", "PII:address"]
 "data:user-ssn" = ["PII:SSN"]
 
-[[taint_rules]]
+[[exposure_rules]]
 labels = ["PII:SSN"]
 blocks = ["tool:external-api", "tool:email", "tool:web-search"]
 
-[[taint_rules]]
+[[exposure_rules]]
 labels = ["PII:*", "financial:*"]
 match = "all"
 blocks = ["tool:*"]
@@ -292,42 +297,42 @@ blocks = ["tool:*"]
     }
 
     #[test]
-    fn test_taint_blocks_access() {
+    fn test_exposure_blocks_access() {
         let policy = test_policy();
-        let taint = vec![TaintLabel::new("PII:SSN")];
+        let exposure = vec![ExposureLabel::new("PII:SSN")];
 
         // web-search should be blocked
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:web-search"),
             &Operation::new("invoke"),
-            &taint,
+            &exposure,
         );
         assert!(!decision.is_granted());
-        assert!(matches!(decision, PolicyDecision::DeniedByTaint { .. }));
+        assert!(matches!(decision, PolicyDecision::DeniedByExposure { .. }));
     }
 
     #[test]
-    fn test_taint_allows_non_blocked() {
+    fn test_exposure_allows_non_blocked() {
         let policy = test_policy();
-        let taint = vec![TaintLabel::new("PII:SSN")];
+        let exposure = vec![ExposureLabel::new("PII:SSN")];
 
-        // file-read should still work with SSN taint
+        // file-read should still work with SSN exposure
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:file-read"),
             &Operation::new("invoke"),
-            &taint,
+            &exposure,
         );
         assert!(decision.is_granted());
     }
 
     #[test]
-    fn test_compound_taint_rule() {
+    fn test_compound_exposure_rule() {
         let policy = test_policy();
 
         // PII alone shouldn't trigger the compound rule
-        let pii_only = vec![TaintLabel::new("PII:email")];
+        let pii_only = vec![ExposureLabel::new("PII:email")];
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:file-read"),
@@ -338,8 +343,8 @@ blocks = ["tool:*"]
 
         // PII + financial should trigger the compound rule blocking all tools
         let both = vec![
-            TaintLabel::new("PII:email"),
-            TaintLabel::new("financial:balance"),
+            ExposureLabel::new("PII:email"),
+            ExposureLabel::new("financial:balance"),
         ];
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),

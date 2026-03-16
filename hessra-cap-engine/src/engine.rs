@@ -7,8 +7,8 @@ use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 use crate::context::{self, ContextToken, HessraContext};
 use crate::error::EngineError;
 use crate::types::{
-    CapabilityGrant, Designation, IdentityConfig, MintOptions, MintResult, ObjectId, Operation,
-    PolicyBackend, PolicyDecision, SessionConfig, TaintLabel,
+    CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
+    Operation, PolicyBackend, PolicyDecision, SessionConfig,
 };
 
 /// The Hessra Capability Engine.
@@ -56,7 +56,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Evaluate whether a capability request would be granted, without minting.
     ///
     /// Checks both the capability space (does the subject hold this capability?)
-    /// and taint restrictions (would context contamination block this?).
+    /// and exposure restrictions (would context exposure block this?).
     pub fn evaluate(
         &self,
         subject: &ObjectId,
@@ -64,12 +64,12 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         operation: &Operation,
         context: Option<&ContextToken>,
     ) -> PolicyDecision {
-        let taint_labels: Vec<TaintLabel> = context
-            .map(|c| c.taint_labels().to_vec())
+        let exposure_labels: Vec<ExposureLabel> = context
+            .map(|c| c.exposure_labels().to_vec())
             .unwrap_or_default();
 
         self.policy
-            .evaluate(subject, target, operation, &taint_labels)
+            .evaluate(subject, target, operation, &exposure_labels)
     }
 
     // =========================================================================
@@ -79,9 +79,9 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Mint a capability token for a subject to access a target with an operation.
     ///
     /// The engine:
-    /// 1. Evaluates the policy (capability space + taint restrictions)
+    /// 1. Evaluates the policy (capability space + exposure restrictions)
     /// 2. If granted, mints a capability token via `hessra-cap-token`
-    /// 3. If the target has data classifications, auto-applies taint to the context
+    /// 3. If the target has data classifications, auto-applies exposure to the context
     ///
     /// Returns a `MintResult` containing the token and optionally an updated context.
     pub fn mint_capability(
@@ -103,11 +103,11 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
                     reason: reason.clone(),
                 });
             }
-            PolicyDecision::DeniedByTaint {
+            PolicyDecision::DeniedByExposure {
                 label,
                 blocked_target,
             } => {
-                return Err(EngineError::TaintRestriction {
+                return Err(EngineError::ExposureRestriction {
                     label: label.clone(),
                     target: blocked_target.clone(),
                 });
@@ -125,13 +125,13 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         .issue(&self.keypair)
         .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
 
-        // Step 3: Auto-apply taint if the target has data classifications
+        // Step 3: Auto-apply exposure if the target has data classifications
         let updated_context = if let Some(ctx) = context {
             let classifications = self.policy.classification(target);
             if classifications.is_empty() {
                 Some(ctx.clone())
             } else {
-                Some(context::add_taint_block(
+                Some(context::add_exposure_block(
                     ctx,
                     &classifications,
                     target,
@@ -193,11 +193,11 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
                     reason: reason.clone(),
                 });
             }
-            PolicyDecision::DeniedByTaint {
+            PolicyDecision::DeniedByExposure {
                 label,
                 blocked_target,
             } => {
-                return Err(EngineError::TaintRestriction {
+                return Err(EngineError::ExposureRestriction {
                     label: label.clone(),
                     target: blocked_target.clone(),
                 });
@@ -221,13 +221,13 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             .issue(&self.keypair)
             .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
 
-        // Step 3: Auto-apply taint if the target has data classifications
+        // Step 3: Auto-apply exposure if the target has data classifications
         let updated_context = if let Some(ctx) = context {
             let classifications = self.policy.classification(target);
             if classifications.is_empty() {
                 Some(ctx.clone())
             } else {
-                Some(context::add_taint_block(
+                Some(context::add_exposure_block(
                     ctx,
                     &classifications,
                     target,
@@ -403,7 +403,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     // Context tokens
     // =========================================================================
 
-    /// Mint a fresh context token for a subject (new session, no taint).
+    /// Mint a fresh context token for a subject (new session, no exposure).
     pub fn mint_context(
         &self,
         subject: &ObjectId,
@@ -412,11 +412,11 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         HessraContext::new(subject.clone(), session_config).issue(&self.keypair)
     }
 
-    /// Add taint to a context token from a specific data source.
+    /// Add exposure to a context token from a specific data source.
     ///
     /// Looks up the data source's classification in the policy and adds
-    /// the corresponding taint labels to the context token.
-    pub fn add_taint(
+    /// the corresponding exposure labels to the context token.
+    pub fn add_exposure(
         &self,
         context: &ContextToken,
         data_source: &ObjectId,
@@ -425,20 +425,20 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         if labels.is_empty() {
             return Ok(context.clone());
         }
-        context::add_taint_block(context, &labels, data_source, &self.keypair)
+        context::add_exposure_block(context, &labels, data_source, &self.keypair)
     }
 
-    /// Add a specific taint label directly to a context token.
-    pub fn add_taint_label(
+    /// Add a specific exposure label directly to a context token.
+    pub fn add_exposure_label(
         &self,
         context: &ContextToken,
-        label: TaintLabel,
+        label: ExposureLabel,
         source: &ObjectId,
     ) -> Result<ContextToken, EngineError> {
-        context::add_taint_block(context, &[label], source, &self.keypair)
+        context::add_exposure_block(context, &[label], source, &self.keypair)
     }
 
-    /// Fork a context token for a sub-agent, inheriting the parent's taint.
+    /// Fork a context token for a sub-agent, inheriting the parent's exposure.
     pub fn fork_context(
         &self,
         parent: &ContextToken,
@@ -448,9 +448,12 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         context::fork_context(parent, child_subject, session_config, &self.keypair)
     }
 
-    /// Extract taint labels from a context token by re-parsing the Biscuit.
-    pub fn extract_taint(&self, context: &ContextToken) -> Result<Vec<TaintLabel>, EngineError> {
-        context::extract_taint_labels(context.token(), self.keypair.public())
+    /// Extract exposure labels from a context token by re-parsing the Biscuit.
+    pub fn extract_exposure(
+        &self,
+        context: &ContextToken,
+    ) -> Result<Vec<ExposureLabel>, EngineError> {
+        context::extract_exposure_labels(context.token(), self.keypair.public())
     }
 
     // =========================================================================

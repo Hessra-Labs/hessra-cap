@@ -1,32 +1,32 @@
 //! Context token wrapper for the capability engine.
 //!
 //! Delegates to `hessra-context-token` for all token operations,
-//! wrapping with engine types (ObjectId, TaintLabel, SessionConfig, EngineError).
+//! wrapping with engine types (ObjectId, ExposureLabel, SessionConfig, EngineError).
 
 use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 
 use crate::error::EngineError;
-use crate::types::{ObjectId, SessionConfig, TaintLabel};
+use crate::types::{ExposureLabel, ObjectId, SessionConfig};
 
 /// A context token tracking data exposure for an object.
 ///
-/// Context tokens are append-only: taint labels can be added but never removed.
+/// Context tokens are append-only: exposure labels can be added but never removed.
 /// The token is a base64-encoded Biscuit with an authority block identifying
-/// the session and subsequent blocks recording taint labels.
+/// the session and subsequent blocks recording exposure labels.
 #[derive(Debug, Clone)]
 pub struct ContextToken {
     /// The base64-encoded Biscuit token.
     token: String,
-    /// Cached taint labels extracted from the token (kept in sync).
-    taint_labels: Vec<TaintLabel>,
+    /// Cached exposure labels extracted from the token (kept in sync).
+    exposure_labels: Vec<ExposureLabel>,
 }
 
 impl ContextToken {
-    /// Create a ContextToken from a raw base64 token string and known taint labels.
-    pub(crate) fn new(token: String, taint_labels: Vec<TaintLabel>) -> Self {
+    /// Create a ContextToken from a raw base64 token string and known exposure labels.
+    pub(crate) fn new(token: String, exposure_labels: Vec<ExposureLabel>) -> Self {
         Self {
             token,
-            taint_labels,
+            exposure_labels,
         }
     }
 
@@ -35,19 +35,19 @@ impl ContextToken {
         &self.token
     }
 
-    /// Get the current taint labels.
-    pub fn taint_labels(&self) -> &[TaintLabel] {
-        &self.taint_labels
+    /// Get the current exposure labels.
+    pub fn exposure_labels(&self) -> &[ExposureLabel] {
+        &self.exposure_labels
     }
 
-    /// Check if this context has a specific taint label.
-    pub fn has_taint(&self, label: &TaintLabel) -> bool {
-        self.taint_labels.contains(label)
+    /// Check if this context has a specific exposure label.
+    pub fn has_exposure(&self, label: &ExposureLabel) -> bool {
+        self.exposure_labels.contains(label)
     }
 
-    /// Check if this context has any taint labels.
-    pub fn is_tainted(&self) -> bool {
-        !self.taint_labels.is_empty()
+    /// Check if this context has any exposure labels.
+    pub fn is_exposed(&self) -> bool {
+        !self.exposure_labels.is_empty()
     }
 }
 
@@ -86,10 +86,10 @@ impl HessraContext {
     }
 }
 
-/// Add taint labels to a context token.
-pub fn add_taint_block(
+/// Add exposure labels to a context token.
+pub fn add_exposure_block(
     context: &ContextToken,
-    labels: &[TaintLabel],
+    labels: &[ExposureLabel],
     source: &ObjectId,
     keypair: &KeyPair,
 ) -> Result<ContextToken, EngineError> {
@@ -99,16 +99,16 @@ pub fn add_taint_block(
 
     let label_strings: Vec<String> = labels.iter().map(|l| l.as_str().to_string()).collect();
 
-    let new_token = hessra_context_token::add_taint(
+    let new_token = hessra_context_token::add_exposure(
         context.token(),
         keypair.public(),
         &label_strings,
         source.as_str().to_string(),
     )
-    .map_err(|e| EngineError::Context(format!("failed to add taint: {e}")))?;
+    .map_err(|e| EngineError::Context(format!("failed to add exposure: {e}")))?;
 
     // Merge labels
-    let mut all_labels = context.taint_labels().to_vec();
+    let mut all_labels = context.exposure_labels().to_vec();
     for label in labels {
         if !all_labels.contains(label) {
             all_labels.push(label.clone());
@@ -118,18 +118,18 @@ pub fn add_taint_block(
     Ok(ContextToken::new(new_token, all_labels))
 }
 
-/// Extract all taint labels from a context token by re-parsing the Biscuit.
-pub fn extract_taint_labels(
+/// Extract all exposure labels from a context token by re-parsing the Biscuit.
+pub fn extract_exposure_labels(
     token: &str,
     public_key: PublicKey,
-) -> Result<Vec<TaintLabel>, EngineError> {
-    let labels = hessra_context_token::extract_taint_labels(token, public_key)
-        .map_err(|e| EngineError::Context(format!("failed to extract taint labels: {e}")))?;
+) -> Result<Vec<ExposureLabel>, EngineError> {
+    let labels = hessra_context_token::extract_exposure_labels(token, public_key)
+        .map_err(|e| EngineError::Context(format!("failed to extract exposure labels: {e}")))?;
 
-    Ok(labels.into_iter().map(TaintLabel::new).collect())
+    Ok(labels.into_iter().map(ExposureLabel::new).collect())
 }
 
-/// Fork a context token for a sub-agent, inheriting the parent's taint.
+/// Fork a context token for a sub-agent, inheriting the parent's exposure.
 pub fn fork_context(
     parent: &ContextToken,
     child_subject: &ObjectId,
@@ -150,12 +150,13 @@ pub fn fork_context(
     )
     .map_err(|e| EngineError::Context(format!("failed to fork context: {e}")))?;
 
-    // Extract taint labels from the new child token
-    let taint_labels = hessra_context_token::extract_taint_labels(&child_token, keypair.public())
-        .map_err(|e| EngineError::Context(format!("failed to extract child taint: {e}")))?
-        .into_iter()
-        .map(TaintLabel::new)
-        .collect();
+    // Extract exposure labels from the new child token
+    let exposure_labels =
+        hessra_context_token::extract_exposure_labels(&child_token, keypair.public())
+            .map_err(|e| EngineError::Context(format!("failed to extract child exposure: {e}")))?
+            .into_iter()
+            .map(ExposureLabel::new)
+            .collect();
 
-    Ok(ContextToken::new(child_token, taint_labels))
+    Ok(ContextToken::new(child_token, exposure_labels))
 }
