@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use hessra_cap_engine::{
-    CapabilityGrant, ExposureLabel, ObjectId, Operation, PolicyBackend, PolicyDecision,
+    AnchorBinding, CapabilityGrant, ExposureLabel, ObjectId, Operation, PolicyBackend,
+    PolicyDecision,
 };
 
 use crate::config::{ExposureRuleConfig, PolicyConfig};
@@ -32,6 +33,7 @@ struct ObjectEntry {
 struct CapEntry {
     target: String,
     operations: Vec<String>,
+    anchor: Option<AnchorBinding>,
 }
 
 impl CListPolicy {
@@ -45,9 +47,19 @@ impl CListPolicy {
                 capabilities: obj
                     .capabilities
                     .into_iter()
-                    .map(|c| CapEntry {
-                        target: c.target,
-                        operations: c.operations,
+                    .map(|c| {
+                        // PolicyConfig::validate has already enforced
+                        // mutual exclusion of anchor_to_subject and anchor.
+                        let anchor = if c.anchor_to_subject {
+                            Some(AnchorBinding::Subject)
+                        } else {
+                            c.anchor.map(|a| AnchorBinding::Principal(ObjectId::new(a)))
+                        };
+                        CapEntry {
+                            target: c.target,
+                            operations: c.operations,
+                            anchor,
+                        }
                     })
                     .collect(),
             };
@@ -163,7 +175,13 @@ impl PolicyBackend for CListPolicy {
             if cap.target == target.as_str()
                 && cap.operations.iter().any(|op| op == operation.as_str())
             {
-                return PolicyDecision::Granted;
+                // Resolve AnchorBinding::Subject to the requesting subject so
+                // the engine sees a concrete principal.
+                let anchor = cap.anchor.as_ref().map(|binding| match binding {
+                    AnchorBinding::Subject => subject.clone(),
+                    AnchorBinding::Principal(p) => p.clone(),
+                });
+                return PolicyDecision::Granted { anchor };
             }
         }
 
@@ -193,6 +211,7 @@ impl PolicyBackend for CListPolicy {
                     .map(|cap| CapabilityGrant {
                         target: ObjectId::new(&cap.target),
                         operations: cap.operations.iter().map(Operation::new).collect(),
+                        anchor: cap.anchor.clone(),
                     })
                     .collect()
             })

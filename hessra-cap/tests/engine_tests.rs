@@ -27,6 +27,30 @@ capabilities = [
     { target = "service:user-service", operations = ["read", "write"] },
 ]
 
+[[objects]]
+id = "agent:jake"
+can_delegate = false
+capabilities = [
+    { target = "filesystem:source", operations = ["read"], anchor_to_subject = true },
+]
+
+[[objects]]
+id = "service:webapp"
+can_delegate = true
+capabilities = []
+
+[[objects]]
+id = "service:bobapp"
+can_delegate = false
+capabilities = []
+
+[[objects]]
+id = "service:courier-svc"
+can_delegate = false
+capabilities = [
+    { target = "service:bobapp", operations = ["read"], anchor = "service:webapp" },
+]
+
 [classifications]
 "data:user-profile" = ["PII:email", "PII:address"]
 "data:user-ssn" = ["PII:SSN"]
@@ -547,7 +571,7 @@ fn test_full_agent_lifecycle() {
 }
 
 // =========================================================================
-// Mint capability with options (namespace restriction, custom time)
+// Mint capability with options (holder binding, custom time)
 // =========================================================================
 
 #[test]
@@ -573,8 +597,22 @@ fn test_mint_capability_with_default_options() {
         .expect("Should verify");
 }
 
+// =========================================================================
+// Anchor designation
+// =========================================================================
+//
+// Anchor binds a capability to one named principal as the only authority that
+// can verify it. Sub-principals receiving the capability via delegation
+// present it back to the anchor for verification. At verify time the verifier
+// asserts "I am the anchor" by supplying
+// `Designation { label: "anchor", value: <its-own-principal-name> }`. Anchor
+// lives in the authority block and survives third-party attenuation.
+
 #[test]
-fn test_mint_capability_with_namespace_restriction() {
+fn test_anchor_via_options_requires_anchor_designation() {
+    // mint_capability_with_options + MintOptions { anchor: Some(...), .. }
+    // binds the capability even when the policy declaration has no anchor
+    // configured.
     let engine = test_engine();
 
     let result = engine
@@ -584,19 +622,269 @@ fn test_mint_capability_with_namespace_restriction() {
             &Operation::new("invoke"),
             None,
             MintOptions {
-                namespace: Some("myapp.hessra.dev".to_string()),
+                anchor: Some(ObjectId::new("agent:openclaw")),
                 ..Default::default()
             },
         )
-        .expect("Should mint with namespace");
+        .expect("Should mint with explicit anchor option");
 
-    // Namespace-restricted token should fail without namespace fact
+    // Non-designated verify path fails closed: no anchor fact supplied.
     let verify = engine.verify_capability(
         &result.token,
         &ObjectId::new("tool:file-read"),
         &Operation::new("invoke"),
     );
-    assert!(verify.is_err(), "Should fail without namespace in verifier");
+    assert!(
+        verify.is_err(),
+        "Anchor-bound cap must fail verification without anchor designation"
+    );
+
+    // Verifier asserts "I am agent:openclaw", check passes.
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            &[Designation {
+                label: "anchor".to_string(),
+                value: "agent:openclaw".to_string(),
+            }],
+        )
+        .expect("Should verify when verifier asserts the matching anchor");
+
+    // A different verifier asserting "I am agent:mallory" cannot honor this cap.
+    let verify = engine.verify_designated_capability(
+        &result.token,
+        &ObjectId::new("tool:file-read"),
+        &Operation::new("invoke"),
+        &[Designation {
+            label: "anchor".to_string(),
+            value: "agent:mallory".to_string(),
+        }],
+    );
+    assert!(
+        verify.is_err(),
+        "Cap must not verify at any principal other than the anchor"
+    );
+}
+
+#[test]
+fn test_anchor_to_subject_resolves_to_subject() {
+    // The policy declaration for agent:jake on filesystem:source has
+    // anchor_to_subject = true; the engine resolves the anchor to the subject
+    // (agent:jake) at mint time.
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability(
+            &ObjectId::new("agent:jake"),
+            &ObjectId::new("filesystem:source"),
+            &Operation::new("read"),
+            None,
+        )
+        .expect("Should mint policy-driven anchor capability");
+
+    // Without anchor designation: fails closed.
+    let verify = engine.verify_capability(
+        &result.token,
+        &ObjectId::new("filesystem:source"),
+        &Operation::new("read"),
+    );
+    assert!(
+        verify.is_err(),
+        "Policy-driven anchor capability must require anchor designation at verify"
+    );
+
+    // Jake's own services assert "I am agent:jake" and verify successfully.
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("filesystem:source"),
+            &Operation::new("read"),
+            &[Designation {
+                label: "anchor".to_string(),
+                value: "agent:jake".to_string(),
+            }],
+        )
+        .expect("Should verify when anchor matches the subject");
+}
+
+#[test]
+fn test_explicit_anchor_to_other_principal() {
+    // Trustee-style declaration: the issuer mints to courier-svc with the
+    // capability anchored at webapp. The courier never had the right to use
+    // this capability at any other principal.
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability(
+            &ObjectId::new("service:courier-svc"),
+            &ObjectId::new("service:bobapp"),
+            &Operation::new("read"),
+            None,
+        )
+        .expect("Should mint trustee-style capability");
+
+    // Verifier asserts "I am service:webapp", which is the anchor. Check
+    // passes.
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("service:bobapp"),
+            &Operation::new("read"),
+            &[Designation {
+                label: "anchor".to_string(),
+                value: "service:webapp".to_string(),
+            }],
+        )
+        .expect("Should verify at the explicit anchor (service:webapp)");
+
+    // The subject cannot honor its own capability by claiming itself as anchor.
+    let verify = engine.verify_designated_capability(
+        &result.token,
+        &ObjectId::new("service:bobapp"),
+        &Operation::new("read"),
+        &[Designation {
+            label: "anchor".to_string(),
+            value: "service:courier-svc".to_string(),
+        }],
+    );
+    assert!(
+        verify.is_err(),
+        "In the trustee pattern, the subject is not the anchor and cannot honor its own capability"
+    );
+}
+
+#[test]
+fn test_anchor_survives_third_party_attenuation() {
+    // The anchor check lives in the authority block, so subsequent designation
+    // attenuations (which append blocks) cannot strip the anchor binding.
+    // This is the delegation pattern: a recipient receives a broad
+    // anchor-bound capability, attenuates it per-user, but the resulting
+    // capability still must be presented back to the anchor for verification.
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability(
+            &ObjectId::new("agent:jake"),
+            &ObjectId::new("filesystem:source"),
+            &Operation::new("read"),
+            None,
+        )
+        .expect("Should mint policy-driven anchor capability");
+
+    // Attenuate with an additional path_prefix designation (third-party block).
+    let attenuated = engine
+        .attenuate_with_designations(
+            &result.token,
+            &[Designation {
+                label: "path_prefix".to_string(),
+                value: "code/hessra/".to_string(),
+            }],
+        )
+        .expect("Should attenuate");
+
+    // Still requires both anchor AND path_prefix at verify time.
+    engine
+        .verify_designated_capability(
+            &attenuated,
+            &ObjectId::new("filesystem:source"),
+            &Operation::new("read"),
+            &[
+                Designation {
+                    label: "anchor".to_string(),
+                    value: "agent:jake".to_string(),
+                },
+                Designation {
+                    label: "path_prefix".to_string(),
+                    value: "code/hessra/".to_string(),
+                },
+            ],
+        )
+        .expect("Verify with both anchor and path_prefix should succeed");
+
+    // Without anchor designation, attenuated cap still fails.
+    let verify = engine.verify_designated_capability(
+        &attenuated,
+        &ObjectId::new("filesystem:source"),
+        &Operation::new("read"),
+        &[Designation {
+            label: "path_prefix".to_string(),
+            value: "code/hessra/".to_string(),
+        }],
+    );
+    assert!(
+        verify.is_err(),
+        "Anchor check survives attenuation and remains required"
+    );
+}
+
+#[test]
+fn test_non_anchored_declaration_emits_no_anchor_designation() {
+    // For declarations without an anchor configuration, mint_capability does
+    // NOT add an anchor check. The capability verifies without any
+    // designations and can be verified by any principal.
+    let engine = test_engine();
+
+    let result = engine
+        .mint_capability(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            None,
+        )
+        .expect("Should mint plain capability");
+
+    engine
+        .verify_capability(
+            &result.token,
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+        )
+        .expect("Plain capability should verify with no designations");
+}
+
+#[test]
+fn test_policy_validation_rejects_anchor_conflict() {
+    // anchor_to_subject and anchor on the same declaration must be mutually
+    // exclusive.
+    let result = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "agent:jake"
+capabilities = [
+    { target = "filesystem:source", operations = ["read"],
+      anchor_to_subject = true, anchor = "service:webapp" },
+]
+
+[[objects]]
+id = "service:webapp"
+capabilities = []
+        "#,
+    );
+    assert!(
+        result.is_err(),
+        "Policy with both anchor_to_subject and anchor on the same declaration must be rejected"
+    );
+}
+
+#[test]
+fn test_policy_validation_rejects_unknown_anchor_principal() {
+    // An explicit anchor must reference a principal declared in the policy.
+    let result = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "service:courier-svc"
+capabilities = [
+    { target = "service:bobapp", operations = ["read"],
+      anchor = "service:does-not-exist" },
+]
+        "#,
+    );
+    assert!(
+        result.is_err(),
+        "Policy referencing an unknown anchor principal must be rejected"
+    );
 }
 
 #[test]

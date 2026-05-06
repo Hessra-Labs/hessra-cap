@@ -110,6 +110,25 @@ impl From<String> for ExposureLabel {
     }
 }
 
+/// How a capability declaration binds the principal that can verify the
+/// issued capability.
+///
+/// At verify time, the verifier proves "I am `<anchor>`" by supplying
+/// `Designation { label: "anchor", value: <its-own-principal-name> }`. The
+/// capability is honored only by the named principal. A receiving principal
+/// who is not the anchor can still attenuate and delegate the capability
+/// downward; the capability simply must eventually be presented back to the
+/// anchor for verification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AnchorBinding {
+    /// Anchor to the subject of this declaration. The engine resolves to a
+    /// concrete principal at mint time.
+    Subject,
+    /// Anchor to a specific named principal (trustee or multi-organization
+    /// pattern).
+    Principal(ObjectId),
+}
+
 /// A capability grant: permission for a subject to perform operations on a target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityGrant {
@@ -117,6 +136,10 @@ pub struct CapabilityGrant {
     pub target: ObjectId,
     /// The operations allowed on the target.
     pub operations: Vec<Operation>,
+    /// Anchor binding for issued capabilities under this declaration. `None`
+    /// means the capability is not anchored and can be verified by any
+    /// principal.
+    pub anchor: Option<AnchorBinding>,
 }
 
 /// Result of minting a capability token.
@@ -133,12 +156,17 @@ pub struct MintResult {
 
 /// Options for customizing capability minting beyond the basic case.
 ///
-/// Used with `CapabilityEngine::mint_capability_with_options` to add namespace
-/// restrictions or custom time configuration to minted tokens.
+/// Used with `CapabilityEngine::mint_capability_with_options` and
+/// `CapabilityEngine::issue_capability` to override the policy's default
+/// anchor configuration or set a custom token lifetime.
 #[derive(Debug, Clone, Default)]
 pub struct MintOptions {
-    /// Restrict the token to a specific namespace.
-    pub namespace: Option<String>,
+    /// Override the policy's anchor configuration with an explicit principal.
+    /// When set, the engine attaches `designation("anchor", value)` to the
+    /// minted capability, regardless of what the policy declares. Used for
+    /// the `issue_capability` path (which skips policy) and for explicit
+    /// caller intent.
+    pub anchor: Option<ObjectId>,
     /// Override the default time config. If `None`, uses default (5 minutes).
     pub time_config: Option<TokenTimeConfig>,
 }
@@ -157,8 +185,6 @@ pub struct IdentityConfig {
     pub ttl: i64,
     /// Whether the identity token can be delegated to sub-identities.
     pub delegatable: bool,
-    /// Optional namespace restriction.
-    pub namespace: Option<String>,
 }
 
 impl Default for IdentityConfig {
@@ -166,7 +192,6 @@ impl Default for IdentityConfig {
         Self {
             ttl: 3600,
             delegatable: false,
-            namespace: None,
         }
     }
 }
@@ -187,8 +212,11 @@ impl Default for SessionConfig {
 /// Result of a policy evaluation.
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {
-    /// The capability request is granted.
-    Granted,
+    /// The capability request is granted. `anchor` carries the resolved anchor
+    /// principal, if the matched declaration is anchor-bound. The CList policy
+    /// resolves `AnchorBinding::Subject` to the requesting subject before
+    /// returning, so the engine sees a concrete principal id (or `None`).
+    Granted { anchor: Option<ObjectId> },
     /// The capability request is denied by policy (object doesn't hold this capability).
     Denied { reason: String },
     /// The capability request is denied due to exposure restrictions.
@@ -200,7 +228,7 @@ pub enum PolicyDecision {
 
 impl PolicyDecision {
     pub fn is_granted(&self) -> bool {
-        matches!(self, PolicyDecision::Granted)
+        matches!(self, PolicyDecision::Granted { .. })
     }
 }
 

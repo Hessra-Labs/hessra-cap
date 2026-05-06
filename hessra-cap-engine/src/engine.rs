@@ -93,14 +93,14 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     ) -> Result<MintResult, EngineError> {
         // Step 1: Evaluate policy
         let decision = self.evaluate(subject, target, operation, context);
-        match &decision {
-            PolicyDecision::Granted => {}
+        let anchor = match decision {
+            PolicyDecision::Granted { anchor } => anchor,
             PolicyDecision::Denied { reason } => {
                 return Err(EngineError::CapabilityDenied {
                     subject: subject.clone(),
                     target: target.clone(),
                     operation: operation.clone(),
-                    reason: reason.clone(),
+                    reason,
                 });
             }
             PolicyDecision::DeniedByExposure {
@@ -108,22 +108,27 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
                 blocked_target,
             } => {
                 return Err(EngineError::ExposureRestriction {
-                    label: label.clone(),
-                    target: blocked_target.clone(),
+                    label,
+                    target: blocked_target,
                 });
             }
-        }
+        };
 
-        // Step 2: Mint the capability token
+        // Step 2: Mint the capability token, attaching the anchor designation
+        // if the policy resolved one.
         let time_config = TokenTimeConfig::default();
-        let token = HessraCapability::new(
+        let mut builder = HessraCapability::new(
             subject.as_str().to_string(),
             target.as_str().to_string(),
             operation.as_str().to_string(),
             time_config,
-        )
-        .issue(&self.keypair)
-        .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
+        );
+        if let Some(anchor) = anchor {
+            builder = builder.anchor_bound(anchor.as_str().to_string());
+        }
+        let token = builder
+            .issue(&self.keypair)
+            .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
 
         // Step 3: Auto-apply exposure if the target has data classifications
         let updated_context = if let Some(ctx) = context {
@@ -170,9 +175,9 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
 
     /// Mint a capability token with additional restrictions.
     ///
-    /// Like `mint_capability`, but supports namespace restriction and custom time config.
-    /// This is useful when the caller needs to propagate namespace restrictions or
-    /// control token lifetime.
+    /// Like `mint_capability`, but supports overriding the policy's anchor
+    /// binding or supplying a custom time config. When `options.anchor` is set,
+    /// it takes precedence over the policy's anchor decision.
     pub fn mint_capability_with_options(
         &self,
         subject: &ObjectId,
@@ -183,14 +188,14 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     ) -> Result<MintResult, EngineError> {
         // Step 1: Evaluate policy
         let decision = self.evaluate(subject, target, operation, context);
-        match &decision {
-            PolicyDecision::Granted => {}
+        let policy_anchor = match decision {
+            PolicyDecision::Granted { anchor } => anchor,
             PolicyDecision::Denied { reason } => {
                 return Err(EngineError::CapabilityDenied {
                     subject: subject.clone(),
                     target: target.clone(),
                     operation: operation.clone(),
-                    reason: reason.clone(),
+                    reason,
                 });
             }
             PolicyDecision::DeniedByExposure {
@@ -198,13 +203,14 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
                 blocked_target,
             } => {
                 return Err(EngineError::ExposureRestriction {
-                    label: label.clone(),
-                    target: blocked_target.clone(),
+                    label,
+                    target: blocked_target,
                 });
             }
-        }
+        };
 
-        // Step 2: Mint the token with options
+        // Step 2: Mint the token. The caller's explicit options.anchor takes
+        // precedence over the policy's anchor decision.
         let time_config = options.time_config.unwrap_or_default();
         let mut builder = HessraCapability::new(
             subject.as_str().to_string(),
@@ -213,8 +219,9 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             time_config,
         );
 
-        if let Some(namespace) = options.namespace {
-            builder = builder.namespace_restricted(namespace);
+        let resolved_anchor = options.anchor.or(policy_anchor);
+        if let Some(anchor) = resolved_anchor {
+            builder = builder.anchor_bound(anchor.as_str().to_string());
         }
 
         let token = builder
@@ -269,8 +276,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             time_config,
         );
 
-        if let Some(namespace) = options.namespace {
-            builder = builder.namespace_restricted(namespace);
+        if let Some(anchor) = options.anchor {
+            builder = builder.anchor_bound(anchor.as_str().to_string());
         }
 
         builder
@@ -320,6 +327,18 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     }
 
     /// Verify a capability token that includes designation checks.
+    ///
+    /// For anchor-bound capabilities (minted from a declaration with
+    /// `anchor_to_subject` or explicit `anchor` in policy, or via
+    /// `MintOptions.anchor`), the verifier MUST assert its own principal
+    /// identity by including
+    /// `Designation { label: "anchor", value: <its-own-principal-name> }` in
+    /// `designations`. The capability verifies if and only if the anchor
+    /// designation supplied here matches the anchor value embedded at mint
+    /// time. In plain language, the verifier is proving "I am the principal
+    /// this capability is anchored at." Anchor is treated as a regular
+    /// designation at verify time; the engine does not auto-supply the
+    /// verifier's identity.
     pub fn verify_designated_capability(
         &self,
         token: &str,
@@ -356,14 +375,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             duration: config.ttl,
         };
 
-        let mut builder = HessraIdentity::new(subject.as_str().to_string(), time_config)
-            .delegatable(config.delegatable);
-
-        if let Some(namespace) = config.namespace {
-            builder = builder.namespace_restricted(namespace);
-        }
-
-        builder
+        HessraIdentity::new(subject.as_str().to_string(), time_config)
+            .delegatable(config.delegatable)
             .issue(&self.keypair)
             .map_err(|e| EngineError::Identity(format!("failed to mint identity: {e}")))
     }

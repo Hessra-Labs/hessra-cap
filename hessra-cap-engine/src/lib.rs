@@ -17,8 +17,8 @@ pub use context::{ContextToken, HessraContext};
 pub use engine::CapabilityEngine;
 pub use error::EngineError;
 pub use types::{
-    CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
-    Operation, PolicyBackend, PolicyDecision, SessionConfig,
+    AnchorBinding, CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions,
+    MintResult, ObjectId, Operation, PolicyBackend, PolicyDecision, SessionConfig,
 };
 
 // Re-export commonly needed types from token crates

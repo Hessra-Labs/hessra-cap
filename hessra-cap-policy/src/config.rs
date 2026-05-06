@@ -11,6 +11,18 @@ pub enum PolicyConfigError {
     Io(#[from] std::io::Error),
     #[error("failed to parse policy TOML: {0}")]
     Parse(#[from] toml::de::Error),
+    #[error(
+        "capability declaration on object '{subject}' for target '{target}' specifies both `anchor_to_subject` and `anchor`; these are mutually exclusive"
+    )]
+    AnchorConflict { subject: String, target: String },
+    #[error(
+        "capability declaration on object '{subject}' for target '{target}' anchors to '{anchor}', which is not a known principal in this policy"
+    )]
+    UnknownAnchorPrincipal {
+        subject: String,
+        target: String,
+        anchor: String,
+    },
 }
 
 /// Top-level policy configuration.
@@ -63,13 +75,31 @@ fn default_ttl() -> i64 {
     3600
 }
 
-/// A single capability grant configuration.
+/// A single capability declaration.
+///
+/// Anchor binding is configured via two mutually exclusive fields:
+/// - `anchor_to_subject = true`: shorthand for "anchor = the subject of this
+///   declaration." This is the common case for delegation patterns where the
+///   subject is also the verifying authority.
+/// - `anchor = "<principal>"`: explicit anchor to some other principal. Trustee
+///   or multi-organization patterns where the issuer mints to one principal but
+///   the capability is intended to be verified by another.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CapabilityConfig {
     /// The target object ID (e.g., "service:user-service", "tool:web-search").
     pub target: String,
     /// Allowed operations on the target (e.g., ["read", "write"]).
     pub operations: Vec<String>,
+    /// Anchor the issued capability to the subject of this declaration.
+    /// Mutually exclusive with `anchor`.
+    #[serde(default)]
+    pub anchor_to_subject: bool,
+    /// Anchor the issued capability to a specific principal as the only
+    /// authority that can verify it. Mutually exclusive with
+    /// `anchor_to_subject`. The principal name must reference an object
+    /// declared elsewhere in this policy.
+    #[serde(default)]
+    pub anchor: Option<String>,
 }
 
 /// An exposure restriction rule.
@@ -103,6 +133,36 @@ impl PolicyConfig {
     /// Parse policy from a TOML string.
     pub fn parse(content: &str) -> Result<Self, PolicyConfigError> {
         let config: PolicyConfig = toml::from_str(content)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Cross-cutting validation: anchor mutual exclusion and known-principal
+    /// reference checks. Runs after deserialization on every parse.
+    fn validate(&self) -> Result<(), PolicyConfigError> {
+        let known_principals: std::collections::HashSet<&str> =
+            self.objects.iter().map(|o| o.id.as_str()).collect();
+
+        for obj in &self.objects {
+            for cap in &obj.capabilities {
+                if cap.anchor_to_subject && cap.anchor.is_some() {
+                    return Err(PolicyConfigError::AnchorConflict {
+                        subject: obj.id.clone(),
+                        target: cap.target.clone(),
+                    });
+                }
+                let Some(anchor) = &cap.anchor else {
+                    continue;
+                };
+                if !known_principals.contains(anchor.as_str()) {
+                    return Err(PolicyConfigError::UnknownAnchorPrincipal {
+                        subject: obj.id.clone(),
+                        target: cap.target.clone(),
+                        anchor: anchor.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }

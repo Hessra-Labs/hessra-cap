@@ -469,9 +469,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-token"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a568d96d31e55f56306994e103bb8dfac9e16385549ae23fd7b0d6a0b66defcd"
+version = "1.1.0"
 dependencies = [
  "base64 0.22.1",
  "biscuit-auth",
@@ -487,8 +485,6 @@ dependencies = [
 [[package]]
 name = "hessra-context-token"
 version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8099b25f2e8dd121d70fea315f6ff9d7bfd4616a2e36c36362d0f78192dca06"
 dependencies = [
  "biscuit-auth",
  "chrono",
@@ -500,8 +496,6 @@ dependencies = [
 [[package]]
 name = "hessra-identity-token"
 version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddb77616e3aabffdf914dfd8e2d11689ed44476392930dba6fea8d625c0055e5"
 dependencies = [
  "base64 0.22.1",
  "biscuit-auth",
@@ -517,8 +511,6 @@ dependencies = [
 [[package]]
 name = "hessra-token-core"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f578dc1d6db9fc0b71ae407ba929e22887941d2cc1f78ed47e474823e9bd22bb"
 dependencies = [
  "base64 0.22.1",
  "biscuit-auth",
