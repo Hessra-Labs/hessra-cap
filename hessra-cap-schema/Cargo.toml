@@ -1,0 +1,16 @@
+[package]
+name = "hessra-cap-schema"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Jake Valentic <jake@hessra.net>"]
+description = "Principal schema definitions for the Hessra capability engine"
+repository = "https://github.com/Hessra-Labs/hessra-cap"
+documentation = "https://docs.rs/hessra-cap-schema"
+keywords = ["hessra", "capability", "schema", "authorization", "security"]
+categories = ["authentication", "config"]
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }

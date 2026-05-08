@@ -1,5 +1,6 @@
 //! The capability engine: orchestrates policy evaluation, token minting, and verification.
 
+use hessra_cap_schema::{RESERVED_LABELS, SchemaRegistry};
 use hessra_cap_token::{CapabilityVerifier, DesignationBuilder, HessraCapability};
 use hessra_identity_token::{HessraIdentity, IdentityVerifier};
 use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
@@ -17,26 +18,50 @@ use crate::types::{
 /// information flow control via context tokens.
 ///
 /// The engine is generic over a `PolicyBackend` implementation, allowing
-/// different policy models (CList, RBAC, ABAC, etc.) to be plugged in.
+/// different policy models (CList, RBAC, ABAC, etc.) to be plugged in. An
+/// optional [`SchemaRegistry`] declares per-target `required_designations`
+/// that the engine enforces at mint time. The default schema is empty, which
+/// disables required-designation enforcement.
 pub struct CapabilityEngine<P: PolicyBackend> {
     policy: P,
+    schema: SchemaRegistry,
     keypair: KeyPair,
 }
 
 impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Create a new engine with a policy backend and signing keypair.
+    /// Defaults to an empty schema; chain [`Self::with_schema`] to attach one.
     pub fn new(policy: P, keypair: KeyPair) -> Self {
-        Self { policy, keypair }
+        Self {
+            policy,
+            schema: SchemaRegistry::new(),
+            keypair,
+        }
     }
 
     /// Create a new engine that generates its own keypair.
     ///
     /// Useful for local/development use where the engine manages its own keys.
+    /// Defaults to an empty schema; chain [`Self::with_schema`] to attach one.
     pub fn with_generated_keys(policy: P) -> Self {
         Self {
             policy,
+            schema: SchemaRegistry::new(),
             keypair: KeyPair::new(),
         }
+    }
+
+    /// Attach a schema registry to this engine. Runs cross-validation against
+    /// the policy backend: every static designation declared in policy must
+    /// appear in the target's schema for the matching operation.
+    ///
+    /// Returns the engine on success or an [`EngineError::UnknownLabelInPolicy`]
+    /// (or other [`EngineError::SchemaPolicyMismatch`] variant) on the first
+    /// label that does not exist in the schema.
+    pub fn with_schema(mut self, schema: SchemaRegistry) -> Result<Self, EngineError> {
+        cross_validate_schema_against_policy(&schema, &self.policy)?;
+        self.schema = schema;
+        Ok(self)
     }
 
     /// Get the engine's public key (for token verification).
@@ -47,6 +72,11 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Get a reference to the policy backend.
     pub fn policy(&self) -> &P {
         &self.policy
+    }
+
+    /// Get a reference to the schema registry.
+    pub fn schema(&self) -> &SchemaRegistry {
+        &self.schema
     }
 
     // =========================================================================
@@ -91,66 +121,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         operation: &Operation,
         context: Option<&ContextToken>,
     ) -> Result<MintResult, EngineError> {
-        // Step 1: Evaluate policy
-        let decision = self.evaluate(subject, target, operation, context);
-        let anchor = match decision {
-            PolicyDecision::Granted { anchor } => anchor,
-            PolicyDecision::Denied { reason } => {
-                return Err(EngineError::CapabilityDenied {
-                    subject: subject.clone(),
-                    target: target.clone(),
-                    operation: operation.clone(),
-                    reason,
-                });
-            }
-            PolicyDecision::DeniedByExposure {
-                label,
-                blocked_target,
-            } => {
-                return Err(EngineError::ExposureRestriction {
-                    label,
-                    target: blocked_target,
-                });
-            }
-        };
-
-        // Step 2: Mint the capability token, attaching the anchor designation
-        // if the policy resolved one.
-        let time_config = TokenTimeConfig::default();
-        let mut builder = HessraCapability::new(
-            subject.as_str().to_string(),
-            target.as_str().to_string(),
-            operation.as_str().to_string(),
-            time_config,
-        );
-        if let Some(anchor) = anchor {
-            builder = builder.anchor_bound(anchor.as_str().to_string());
-        }
-        let token = builder
-            .issue(&self.keypair)
-            .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
-
-        // Step 3: Auto-apply exposure if the target has data classifications
-        let updated_context = if let Some(ctx) = context {
-            let classifications = self.policy.classification(target);
-            if classifications.is_empty() {
-                Some(ctx.clone())
-            } else {
-                Some(context::add_exposure_block(
-                    ctx,
-                    &classifications,
-                    target,
-                    &self.keypair,
-                )?)
-            }
-        } else {
-            None
-        };
-
-        Ok(MintResult {
-            token,
-            context: updated_context,
-        })
+        self.mint_designated_capability(subject, target, operation, &[], context)
     }
 
     /// Verify a capability token for a target and operation.
@@ -186,69 +157,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         context: Option<&ContextToken>,
         options: MintOptions,
     ) -> Result<MintResult, EngineError> {
-        // Step 1: Evaluate policy
-        let decision = self.evaluate(subject, target, operation, context);
-        let policy_anchor = match decision {
-            PolicyDecision::Granted { anchor } => anchor,
-            PolicyDecision::Denied { reason } => {
-                return Err(EngineError::CapabilityDenied {
-                    subject: subject.clone(),
-                    target: target.clone(),
-                    operation: operation.clone(),
-                    reason,
-                });
-            }
-            PolicyDecision::DeniedByExposure {
-                label,
-                blocked_target,
-            } => {
-                return Err(EngineError::ExposureRestriction {
-                    label,
-                    target: blocked_target,
-                });
-            }
-        };
-
-        // Step 2: Mint the token. The caller's explicit options.anchor takes
-        // precedence over the policy's anchor decision.
-        let time_config = options.time_config.unwrap_or_default();
-        let mut builder = HessraCapability::new(
-            subject.as_str().to_string(),
-            target.as_str().to_string(),
-            operation.as_str().to_string(),
-            time_config,
-        );
-
-        let resolved_anchor = options.anchor.or(policy_anchor);
-        if let Some(anchor) = resolved_anchor {
-            builder = builder.anchor_bound(anchor.as_str().to_string());
-        }
-
-        let token = builder
-            .issue(&self.keypair)
-            .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
-
-        // Step 3: Auto-apply exposure if the target has data classifications
-        let updated_context = if let Some(ctx) = context {
-            let classifications = self.policy.classification(target);
-            if classifications.is_empty() {
-                Some(ctx.clone())
-            } else {
-                Some(context::add_exposure_block(
-                    ctx,
-                    &classifications,
-                    target,
-                    &self.keypair,
-                )?)
-            }
-        } else {
-            None
-        };
-
-        Ok(MintResult {
-            token,
-            context: updated_context,
-        })
+        self.mint_inner(subject, target, operation, &[], context, options)
     }
 
     // =========================================================================
@@ -308,7 +217,18 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         builder.attenuate_base64().map_err(EngineError::Token)
     }
 
-    /// Convenience: mint a capability and immediately attenuate with designations.
+    /// Mint a capability with caller-supplied designations attached.
+    ///
+    /// The full pipeline:
+    /// 1. Evaluate policy. The matched declaration may carry static
+    ///    designations (author-time bindings) and an anchor.
+    /// 2. Combine static designations with the caller-supplied ones.
+    /// 3. If the target has a schema entry for the operation, enforce that
+    ///    every `required_designations` label is present in the union.
+    ///    Reserved labels (e.g., `anchor`) are excluded from this check; they
+    ///    are handled through the dedicated anchor path.
+    /// 4. Mint the token, attaching the anchor (if configured) at the
+    ///    authority block, then attenuate with the union of designations.
     pub fn mint_designated_capability(
         &self,
         subject: &ObjectId,
@@ -317,13 +237,119 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         designations: &[Designation],
         context: Option<&ContextToken>,
     ) -> Result<MintResult, EngineError> {
-        let mut result = self.mint_capability(subject, target, operation, context)?;
+        self.mint_inner(
+            subject,
+            target,
+            operation,
+            designations,
+            context,
+            MintOptions::default(),
+        )
+    }
 
-        if !designations.is_empty() {
-            result.token = self.attenuate_with_designations(&result.token, designations)?;
+    fn mint_inner(
+        &self,
+        subject: &ObjectId,
+        target: &ObjectId,
+        operation: &Operation,
+        caller_designations: &[Designation],
+        context: Option<&ContextToken>,
+        options: MintOptions,
+    ) -> Result<MintResult, EngineError> {
+        // Step 1: Evaluate policy.
+        let decision = self.evaluate(subject, target, operation, context);
+        let (policy_anchor, static_designations) = match decision {
+            PolicyDecision::Granted {
+                anchor,
+                designations,
+            } => (anchor, designations),
+            PolicyDecision::Denied { reason } => {
+                return Err(EngineError::CapabilityDenied {
+                    subject: subject.clone(),
+                    target: target.clone(),
+                    operation: operation.clone(),
+                    reason,
+                });
+            }
+            PolicyDecision::DeniedByExposure {
+                label,
+                blocked_target,
+            } => {
+                return Err(EngineError::ExposureRestriction {
+                    label,
+                    target: blocked_target,
+                });
+            }
+        };
+
+        // Step 2: Compute the union of designations attached at mint.
+        let mut combined: Vec<Designation> =
+            Vec::with_capacity(static_designations.len() + caller_designations.len());
+        combined.extend(static_designations);
+        combined.extend(caller_designations.iter().cloned());
+
+        // Step 3: Enforce required_designations from the schema, excluding
+        // reserved labels (handled separately).
+        if let Some(required) = self
+            .schema
+            .required_designations(target.as_str(), operation.as_str())
+        {
+            for label in required {
+                if RESERVED_LABELS.contains(&label.as_str()) {
+                    continue;
+                }
+                if !combined.iter().any(|d| d.label == *label) {
+                    return Err(EngineError::MissingRequiredDesignation {
+                        target: target.clone(),
+                        operation: operation.clone(),
+                        label: label.clone(),
+                    });
+                }
+            }
         }
 
-        Ok(result)
+        // Step 4: Build and issue. Caller's options.anchor overrides policy's.
+        let time_config = options.time_config.unwrap_or_default();
+        let mut builder = HessraCapability::new(
+            subject.as_str().to_string(),
+            target.as_str().to_string(),
+            operation.as_str().to_string(),
+            time_config,
+        );
+        let resolved_anchor = options.anchor.or(policy_anchor);
+        if let Some(anchor) = resolved_anchor {
+            builder = builder.anchor_bound(anchor.as_str().to_string());
+        }
+        let mut token = builder
+            .issue(&self.keypair)
+            .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
+
+        // Step 5: Attach the union of designations via attenuation.
+        if !combined.is_empty() {
+            token = self.attenuate_with_designations(&token, &combined)?;
+        }
+
+        // Step 6: Auto-apply exposure if the target has data classifications.
+        let updated_context = if let Some(ctx) = context {
+            let classifications = self.policy.classification(target);
+            if classifications.is_empty() {
+                Some(ctx.clone())
+            } else {
+                Some(context::add_exposure_block(
+                    ctx,
+                    &classifications,
+                    target,
+                    &self.keypair,
+                )?)
+            }
+        } else {
+            None
+        };
+
+        Ok(MintResult {
+            token,
+            context: updated_context,
+        })
     }
 
     /// Verify a capability token that includes designation checks.
@@ -482,4 +508,41 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     pub fn can_delegate(&self, subject: &ObjectId) -> bool {
         self.policy.can_delegate(subject)
     }
+}
+
+/// Walk every (subject, grant) pair the policy declares and check that any
+/// static designation labels are declared in the schema for the matching
+/// (target, operation). Returns the first mismatch found.
+fn cross_validate_schema_against_policy<P: PolicyBackend>(
+    schema: &SchemaRegistry,
+    policy: &P,
+) -> Result<(), EngineError> {
+    if schema.is_empty() {
+        // An empty schema disables enforcement; nothing to cross-validate.
+        return Ok(());
+    }
+    for (_subject, grant) in policy.all_grants() {
+        if grant.designations.is_empty() {
+            continue;
+        }
+        for op in &grant.operations {
+            let Some(required) = schema.required_designations(grant.target.as_str(), op.as_str())
+            else {
+                // No schema entry for this (target, op) means no enforcement
+                // runs at mint time, so policy-declared static designations
+                // are unconstrained too. Allow.
+                continue;
+            };
+            for d in &grant.designations {
+                if !required.iter().any(|label| label == &d.label) {
+                    return Err(EngineError::UnknownLabelInPolicy {
+                        target: grant.target.clone(),
+                        operation: op.clone(),
+                        label: d.label.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
 }

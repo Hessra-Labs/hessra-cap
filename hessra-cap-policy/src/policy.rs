@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use hessra_cap_engine::{
-    AnchorBinding, CapabilityGrant, ExposureLabel, ObjectId, Operation, PolicyBackend,
+    AnchorBinding, CapabilityGrant, Designation, ExposureLabel, ObjectId, Operation, PolicyBackend,
     PolicyDecision,
 };
 
@@ -34,6 +34,7 @@ struct CapEntry {
     target: String,
     operations: Vec<String>,
     anchor: Option<AnchorBinding>,
+    designations: Vec<Designation>,
 }
 
 impl CListPolicy {
@@ -55,10 +56,19 @@ impl CListPolicy {
                         } else {
                             c.anchor.map(|a| AnchorBinding::Principal(ObjectId::new(a)))
                         };
+                        let designations = c
+                            .designations
+                            .into_iter()
+                            .map(|d| Designation {
+                                label: d.label,
+                                value: d.value,
+                            })
+                            .collect();
                         CapEntry {
                             target: c.target,
                             operations: c.operations,
                             anchor,
+                            designations,
                         }
                     })
                     .collect(),
@@ -181,7 +191,10 @@ impl PolicyBackend for CListPolicy {
                     AnchorBinding::Subject => subject.clone(),
                     AnchorBinding::Principal(p) => p.clone(),
                 });
-                return PolicyDecision::Granted { anchor };
+                return PolicyDecision::Granted {
+                    anchor,
+                    designations: cap.designations.clone(),
+                };
             }
         }
 
@@ -212,6 +225,7 @@ impl PolicyBackend for CListPolicy {
                         target: ObjectId::new(&cap.target),
                         operations: cap.operations.iter().map(Operation::new).collect(),
                         anchor: cap.anchor.clone(),
+                        designations: cap.designations.clone(),
                     })
                     .collect()
             })
@@ -223,6 +237,24 @@ impl PolicyBackend for CListPolicy {
             .get(subject.as_str())
             .map(|obj| obj.can_delegate)
             .unwrap_or(false)
+    }
+
+    fn all_grants(&self) -> Vec<(ObjectId, CapabilityGrant)> {
+        let mut result = Vec::new();
+        for (subject, obj) in &self.objects {
+            for cap in &obj.capabilities {
+                result.push((
+                    ObjectId::new(subject.as_str()),
+                    CapabilityGrant {
+                        target: ObjectId::new(&cap.target),
+                        operations: cap.operations.iter().map(Operation::new).collect(),
+                        anchor: cap.anchor.clone(),
+                        designations: cap.designations.clone(),
+                    },
+                ));
+            }
+        }
+        result
     }
 }
 

@@ -41,4 +41,32 @@ pub enum EngineError {
     /// Policy backend error.
     #[error("policy error: {0}")]
     Policy(String),
+
+    /// A required designation declared in the schema was not supplied at mint
+    /// time (neither by the policy declaration nor by the caller).
+    #[error("missing required designation '{label}' for target '{target}' operation '{operation}'")]
+    MissingRequiredDesignation {
+        target: ObjectId,
+        operation: Operation,
+        label: String,
+    },
+
+    /// A static designation declared in policy references a label that does
+    /// not appear in the target's schema for the matched operation.
+    /// Surfaced at engine construction.
+    #[error(
+        "policy declares static designation '{label}' for target '{target}' operation '{operation}', but the schema does not declare that label"
+    )]
+    UnknownLabelInPolicy {
+        target: ObjectId,
+        operation: Operation,
+        label: String,
+    },
+
+    /// Cross-validation between policy and schema failed at engine construction.
+    /// Either a policy-declared static designation references an unknown label
+    /// (see [`EngineError::UnknownLabelInPolicy`]) or another structural
+    /// mismatch was detected.
+    #[error("schema/policy mismatch: {0}")]
+    SchemaPolicyMismatch(String),
 }

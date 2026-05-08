@@ -437,6 +437,7 @@ version = "0.2.0"
 dependencies = [
  "hessra-cap-engine",
  "hessra-cap-policy",
+ "hessra-cap-schema",
  "hessra-cap-token",
  "hessra-identity-token",
  "hessra-token-core",
@@ -446,6 +447,7 @@ dependencies = [
 name = "hessra-cap-engine"
 version = "0.2.0"
 dependencies = [
+ "hessra-cap-schema",
  "hessra-cap-token",
  "hessra-context-token",
  "hessra-identity-token",
@@ -465,6 +467,15 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "hessra-cap-schema"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

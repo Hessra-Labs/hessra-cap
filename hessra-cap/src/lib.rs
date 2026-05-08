@@ -49,3 +49,8 @@ pub use hessra_cap_engine::*;
 
 // Re-export the default policy backend
 pub use hessra_cap_policy::{CListPolicy, PolicyConfig, PolicyConfigError};
+
+// Re-export the schema types
+pub use hessra_cap_schema::{
+    OperationSchema, RESERVED_LABELS, SchemaError, SchemaRegistry, TargetSchema,
+};

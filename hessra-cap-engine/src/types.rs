@@ -140,6 +140,11 @@ pub struct CapabilityGrant {
     /// means the capability is not anchored and can be verified by any
     /// principal.
     pub anchor: Option<AnchorBinding>,
+    /// Static designations attached at every mint of this declaration.
+    /// Author-time bindings declared in policy. Each label is validated
+    /// against the target's schema at engine construction.
+    #[serde(default)]
+    pub designations: Vec<Designation>,
 }
 
 /// Result of minting a capability token.
@@ -216,7 +221,14 @@ pub enum PolicyDecision {
     /// principal, if the matched declaration is anchor-bound. The CList policy
     /// resolves `AnchorBinding::Subject` to the requesting subject before
     /// returning, so the engine sees a concrete principal id (or `None`).
-    Granted { anchor: Option<ObjectId> },
+    /// `designations` carries author-time static designations declared in the
+    /// matched policy entry; the engine attaches these at mint time alongside
+    /// any caller-supplied designations and validates the union against the
+    /// target's schema.
+    Granted {
+        anchor: Option<ObjectId>,
+        designations: Vec<Designation>,
+    },
     /// The capability request is denied by policy (object doesn't hold this capability).
     Denied { reason: String },
     /// The capability request is denied due to exposure restrictions.
@@ -258,4 +270,13 @@ pub trait PolicyBackend: Send + Sync {
 
     /// Check if a subject can delegate capabilities to other objects.
     fn can_delegate(&self, subject: &ObjectId) -> bool;
+
+    /// Enumerate every (subject, grant) pair the policy declares. Used by the
+    /// engine to cross-validate static designations against schemas at
+    /// construction time. The default implementation returns an empty vector,
+    /// which disables schema cross-validation; backends that store grants
+    /// statically (e.g., CList) should override this.
+    fn all_grants(&self) -> Vec<(ObjectId, CapabilityGrant)> {
+        Vec::new()
+    }
 }

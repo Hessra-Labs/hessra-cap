@@ -84,6 +84,10 @@ fn default_ttl() -> i64 {
 /// - `anchor = "<principal>"`: explicit anchor to some other principal. Trustee
 ///   or multi-organization patterns where the issuer mints to one principal but
 ///   the capability is intended to be verified by another.
+///
+/// Static designations (`designations = [{ label, value }]`) are author-time
+/// bindings the engine attaches at every mint of this declaration. They are
+/// validated against the target's schema at engine construction.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CapabilityConfig {
     /// The target object ID (e.g., "service:user-service", "tool:web-search").
@@ -100,6 +104,19 @@ pub struct CapabilityConfig {
     /// declared elsewhere in this policy.
     #[serde(default)]
     pub anchor: Option<String>,
+    /// Static designations attached at every mint of this declaration.
+    /// Each label must appear in the target's schema for the matched
+    /// operation; cross-validation runs at engine construction.
+    #[serde(default)]
+    pub designations: Vec<DesignationConfig>,
+}
+
+/// A static designation `(label, value)` declared by the policy author and
+/// attached at every mint of the enclosing capability declaration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DesignationConfig {
+    pub label: String,
+    pub value: String,
 }
 
 /// An exposure restriction rule.

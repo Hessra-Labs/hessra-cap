@@ -13,6 +13,7 @@ categories = ["authentication"]
 [dependencies]
 hessra-cap-engine = { workspace = true }
 hessra-cap-policy = { workspace = true }
+hessra-cap-schema = { workspace = true }
 
 [dev-dependencies]
 hessra-cap-token = { workspace = true }
