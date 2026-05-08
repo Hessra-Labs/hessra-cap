@@ -1,8 +1,9 @@
 //! Integration tests for the DesignationResolver wiring on CapabilityEngine.
 
 use hessra_cap::{
-    ArgsResolver, CListPolicy, CapabilityEngine, Designation, DesignationContext,
-    DesignationResolver, EngineError, ObjectId, Operation, ResolverError, SchemaRegistry,
+    ArgsResolver, AuthSession, CListPolicy, CapabilityEngine, CompositeResolver, Designation,
+    DesignationContext, DesignationResolver, EngineError, Event, EventResolver, ObjectId,
+    Operation, RequestUrl, ResolverError, SchemaRegistry, WebappResolver,
 };
 use serde_json::json;
 
@@ -333,4 +334,317 @@ operations = [
             }],
         )
         .expect("verify with the session-supplied tenant_id");
+}
+
+// ---------------------------------------------------------------------------
+// CompositeResolver
+// ---------------------------------------------------------------------------
+
+#[test]
+fn composite_routes_per_target_through_engine() {
+    // Two targets in the same engine, each handled by a different resolver.
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "agent:jake"
+capabilities = [
+    { target = "filesystem:source", operations = ["read"] },
+    { target = "tool:discord-dm", operations = ["send"] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let schema = SchemaRegistry::from_toml(
+        r#"
+[[targets]]
+id = "filesystem:source"
+operations = [{ name = "read", required_designations = ["path_prefix"] }]
+
+[[targets]]
+id = "tool:discord-dm"
+operations = [{ name = "send", required_designations = ["user_id"] }]
+"#,
+    )
+    .expect("schema parses");
+
+    let composite = CompositeResolver::builder()
+        .add(
+            "filesystem:source",
+            ArgsResolver::builder()
+                .for_target("filesystem:source")
+                .map("path", "path_prefix")
+                .build(),
+        )
+        .add(
+            "tool:discord-dm",
+            EventResolver::builder()
+                .for_target("tool:discord-dm")
+                .map("user.id", "user_id")
+                .build(),
+        )
+        .build();
+
+    let engine = CapabilityEngine::with_generated_keys(policy)
+        .with_schema(schema)
+        .expect("schema attaches")
+        .with_resolver(composite);
+
+    // filesystem:source: ArgsResolver wins, reads from ctx.args.
+    let ctx_fs = DesignationContext::new(ObjectId::new("agent:jake"))
+        .with_args(json!({ "path": "code/hessra/" }));
+    let result = engine
+        .mint_with_context(
+            &ObjectId::new("filesystem:source"),
+            &Operation::new("read"),
+            &ctx_fs,
+            None,
+        )
+        .expect("filesystem mint");
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("filesystem:source"),
+            &Operation::new("read"),
+            &[Designation {
+                label: "path_prefix".into(),
+                value: "code/hessra/".into(),
+            }],
+        )
+        .expect("verify filesystem cap");
+
+    // tool:discord-dm: EventResolver wins, reads from Event extension.
+    let mut ctx_discord = DesignationContext::new(ObjectId::new("agent:jake"));
+    ctx_discord.insert(Event(json!({ "user": { "id": "u-7" } })));
+    let result = engine
+        .mint_with_context(
+            &ObjectId::new("tool:discord-dm"),
+            &Operation::new("send"),
+            &ctx_discord,
+            None,
+        )
+        .expect("discord mint");
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("tool:discord-dm"),
+            &Operation::new("send"),
+            &[Designation {
+                label: "user_id".into(),
+                value: "u-7".into(),
+            }],
+        )
+        .expect("verify discord cap");
+}
+
+// ---------------------------------------------------------------------------
+// WebappResolver
+// ---------------------------------------------------------------------------
+
+#[test]
+fn webapp_resolver_session_plus_url_pattern_through_engine() {
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "service:webapp"
+capabilities = [
+    { target = "api:posts", operations = ["delete"] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let schema = SchemaRegistry::from_toml(
+        r#"
+[[targets]]
+id = "api:posts"
+operations = [
+  { name = "delete", required_designations = ["tenant_id", "user_subject", "resource_id"] },
+]
+"#,
+    )
+    .expect("schema parses");
+
+    // tenant_id and user_subject from the session; resource_id from the URL.
+    let resolver = WebappResolver::builder()
+        .for_target("api:posts")
+        .from_session("tenant_id", "tenant_id")
+        .from_session("user", "user_subject")
+        .from_url_pattern("/tenants/{tenant_id}/posts/{resource_id}")
+        .build();
+
+    let engine = CapabilityEngine::with_generated_keys(policy)
+        .with_schema(schema)
+        .expect("schema attaches")
+        .with_resolver(resolver);
+
+    let mut ctx = DesignationContext::new(ObjectId::new("service:webapp"));
+    ctx.insert(
+        AuthSession::new()
+            .with("tenant_id", "acme")
+            .with("user", "alice"),
+    );
+    ctx.insert(RequestUrl("/tenants/acme/posts/p-42".to_string()));
+
+    let result = engine
+        .mint_with_context(
+            &ObjectId::new("api:posts"),
+            &Operation::new("delete"),
+            &ctx,
+            None,
+        )
+        .expect("mint succeeds");
+
+    // Note: tenant_id appears twice (session + URL) which is fine; both
+    // produce the same "tenant_id" designation with the same value, and the
+    // verifier only needs one matching fact per check.
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("api:posts"),
+            &Operation::new("delete"),
+            &[
+                Designation {
+                    label: "tenant_id".into(),
+                    value: "acme".into(),
+                },
+                Designation {
+                    label: "user_subject".into(),
+                    value: "alice".into(),
+                },
+                Designation {
+                    label: "resource_id".into(),
+                    value: "p-42".into(),
+                },
+            ],
+        )
+        .expect("verify webapp cap");
+}
+
+// ---------------------------------------------------------------------------
+// EventResolver
+// ---------------------------------------------------------------------------
+
+#[test]
+fn event_resolver_dotted_path_through_engine() {
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "agent:jake"
+capabilities = [
+    { target = "tool:discord-dm", operations = ["send"] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let schema = SchemaRegistry::from_toml(
+        r#"
+[[targets]]
+id = "tool:discord-dm"
+operations = [
+  { name = "send", required_designations = ["user_id", "channel_id"] },
+]
+"#,
+    )
+    .expect("schema parses");
+
+    let resolver = EventResolver::builder()
+        .for_target("tool:discord-dm")
+        .map("user.id", "user_id")
+        .map("channel.id", "channel_id")
+        .build();
+
+    let engine = CapabilityEngine::with_generated_keys(policy)
+        .with_schema(schema)
+        .expect("schema attaches")
+        .with_resolver(resolver);
+
+    let mut ctx = DesignationContext::new(ObjectId::new("agent:jake"));
+    ctx.insert(Event(json!({
+        "user": { "id": "u-42", "name": "alice" },
+        "channel": { "id": "c-7", "kind": "dm" },
+    })));
+
+    let result = engine
+        .mint_with_context(
+            &ObjectId::new("tool:discord-dm"),
+            &Operation::new("send"),
+            &ctx,
+            None,
+        )
+        .expect("mint succeeds");
+
+    engine
+        .verify_designated_capability(
+            &result.token,
+            &ObjectId::new("tool:discord-dm"),
+            &Operation::new("send"),
+            &[
+                Designation {
+                    label: "user_id".into(),
+                    value: "u-42".into(),
+                },
+                Designation {
+                    label: "channel_id".into(),
+                    value: "c-7".into(),
+                },
+            ],
+        )
+        .expect("verify discord cap");
+}
+
+#[test]
+fn event_resolver_missing_path_propagates_as_engine_error() {
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "agent:jake"
+capabilities = [
+    { target = "tool:discord-dm", operations = ["send"] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let schema = SchemaRegistry::from_toml(
+        r#"
+[[targets]]
+id = "tool:discord-dm"
+operations = [
+  { name = "send", required_designations = ["user_id"] },
+]
+"#,
+    )
+    .expect("schema parses");
+
+    let resolver = EventResolver::builder()
+        .for_target("tool:discord-dm")
+        .map("user.id", "user_id")
+        .build();
+
+    let engine = CapabilityEngine::with_generated_keys(policy)
+        .with_schema(schema)
+        .expect("schema attaches")
+        .with_resolver(resolver);
+
+    let mut ctx = DesignationContext::new(ObjectId::new("agent:jake"));
+    ctx.insert(Event(json!({ "user": {} })));
+
+    let err = match engine.mint_with_context(
+        &ObjectId::new("tool:discord-dm"),
+        &Operation::new("send"),
+        &ctx,
+        None,
+    ) {
+        Ok(_) => panic!("expected resolver error"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(
+            err,
+            EngineError::Resolver(ResolverError::MissingField { .. })
+        ),
+        "expected EngineError::Resolver(MissingField), got {err:?}",
+    );
 }

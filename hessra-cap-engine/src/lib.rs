@@ -18,8 +18,9 @@ pub use context::{ContextToken, HessraContext};
 pub use engine::CapabilityEngine;
 pub use error::EngineError;
 pub use resolver::{
-    ArgsResolver, ArgsResolverBuilder, DesignationContext, DesignationResolver, NoopResolver,
-    ResolverError,
+    ArgsResolver, ArgsResolverBuilder, AuthSession, CompositeResolver, CompositeResolverBuilder,
+    DesignationContext, DesignationResolver, Event, EventResolver, EventResolverBuilder,
+    NoopResolver, RequestUrl, ResolverError, WebappResolver, WebappResolverBuilder,
 };
 pub use types::{
     AnchorBinding, CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions,
