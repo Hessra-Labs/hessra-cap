@@ -17,6 +17,7 @@ hessra-identity-token = { workspace = true }
 hessra-context-token = { workspace = true }
 hessra-cap-schema = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

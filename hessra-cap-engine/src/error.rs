@@ -1,5 +1,6 @@
 //! Error types for the capability engine.
 
+use crate::resolver::ResolverError;
 use crate::types::{ExposureLabel, ObjectId, Operation};
 use thiserror::Error;
 
@@ -69,4 +70,8 @@ pub enum EngineError {
     /// mismatch was detected.
     #[error("schema/policy mismatch: {0}")]
     SchemaPolicyMismatch(String),
+
+    /// A designation resolver failed during a `mint_with_context` call.
+    #[error("resolver error: {0}")]
+    Resolver(#[from] ResolverError),
 }

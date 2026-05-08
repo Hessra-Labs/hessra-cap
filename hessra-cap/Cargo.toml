@@ -19,6 +19,7 @@ hessra-cap-schema = { workspace = true }
 hessra-cap-token = { workspace = true }
 hessra-identity-token = { workspace = true }
 hessra-token-core = { workspace = true }
+serde_json = { workspace = true }
 
 [[example]]
 name = "webapp_auth"

@@ -44,7 +44,9 @@
 //! ).expect("Verification failed");
 //! ```
 
-// Re-export everything from the engine crate
+// Re-export everything from the engine crate, including the resolver layer
+// (DesignationResolver trait, DesignationContext, ArgsResolver, NoopResolver,
+// ResolverError) which is part of the engine module tree.
 pub use hessra_cap_engine::*;
 
 // Re-export the default policy backend

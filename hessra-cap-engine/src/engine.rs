@@ -7,6 +7,7 @@ use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 
 use crate::context::{self, ContextToken, HessraContext};
 use crate::error::EngineError;
+use crate::resolver::{DesignationContext, DesignationResolver, NoopResolver};
 use crate::types::{
     CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
     Operation, PolicyBackend, PolicyDecision, SessionConfig,
@@ -20,21 +21,26 @@ use crate::types::{
 /// The engine is generic over a `PolicyBackend` implementation, allowing
 /// different policy models (CList, RBAC, ABAC, etc.) to be plugged in. An
 /// optional [`SchemaRegistry`] declares per-target `required_designations`
-/// that the engine enforces at mint time. The default schema is empty, which
-/// disables required-designation enforcement.
+/// that the engine enforces at mint time. An optional
+/// [`DesignationResolver`] supplies runtime designation values during
+/// `mint_with_context`. The defaults (empty schema, [`NoopResolver`])
+/// preserve the basic mint behavior for use cases that don't need either.
 pub struct CapabilityEngine<P: PolicyBackend> {
     policy: P,
     schema: SchemaRegistry,
+    resolver: Box<dyn DesignationResolver>,
     keypair: KeyPair,
 }
 
 impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Create a new engine with a policy backend and signing keypair.
-    /// Defaults to an empty schema; chain [`Self::with_schema`] to attach one.
+    /// Defaults to an empty schema and a no-op resolver; chain
+    /// [`Self::with_schema`] and [`Self::with_resolver`] to attach them.
     pub fn new(policy: P, keypair: KeyPair) -> Self {
         Self {
             policy,
             schema: SchemaRegistry::new(),
+            resolver: Box::new(NoopResolver),
             keypair,
         }
     }
@@ -42,11 +48,13 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Create a new engine that generates its own keypair.
     ///
     /// Useful for local/development use where the engine manages its own keys.
-    /// Defaults to an empty schema; chain [`Self::with_schema`] to attach one.
+    /// Defaults to an empty schema and a no-op resolver; chain
+    /// [`Self::with_schema`] and [`Self::with_resolver`] to attach them.
     pub fn with_generated_keys(policy: P) -> Self {
         Self {
             policy,
             schema: SchemaRegistry::new(),
+            resolver: Box::new(NoopResolver),
             keypair: KeyPair::new(),
         }
     }
@@ -62,6 +70,18 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         cross_validate_schema_against_policy(&schema, &self.policy)?;
         self.schema = schema;
         Ok(self)
+    }
+
+    /// Attach a designation resolver to this engine. The resolver is consulted
+    /// by [`Self::mint_with_context`] to supply runtime designation values for
+    /// the current `(target, operation)`. Replaces any previously attached
+    /// resolver.
+    pub fn with_resolver<R>(mut self, resolver: R) -> Self
+    where
+        R: DesignationResolver + 'static,
+    {
+        self.resolver = Box::new(resolver);
+        self
     }
 
     /// Get the engine's public key (for token verification).
@@ -122,6 +142,42 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         context: Option<&ContextToken>,
     ) -> Result<MintResult, EngineError> {
         self.mint_designated_capability(subject, target, operation, &[], context)
+    }
+
+    /// Mint a capability, asking the attached [`DesignationResolver`] to
+    /// supply runtime designations from the given [`DesignationContext`].
+    ///
+    /// The full pipeline:
+    /// 1. Evaluate policy. The matched declaration may carry static
+    ///    designations and an anchor.
+    /// 2. Call `resolver.resolve(target, operation, ctx)` to get runtime
+    ///    designations.
+    /// 3. Combine static, resolver-supplied, and an empty caller list. If the
+    ///    target has a schema entry for the operation, the union must cover
+    ///    every `required_designations` label (anchor and other reserved
+    ///    labels excluded; they are handled separately).
+    /// 4. Mint the token with the anchor (if configured) at the authority
+    ///    block, then attenuate with the union of designations.
+    ///
+    /// Use this when the engine should drive resolution. Callers that already
+    /// have designation values can keep using
+    /// [`Self::mint_designated_capability`] and pre-resolve themselves.
+    pub fn mint_with_context(
+        &self,
+        target: &ObjectId,
+        operation: &Operation,
+        ctx: &DesignationContext,
+        context: Option<&ContextToken>,
+    ) -> Result<MintResult, EngineError> {
+        let resolved = self.resolver.resolve(target, operation, ctx)?;
+        self.mint_inner(
+            &ctx.subject,
+            target,
+            operation,
+            &resolved,
+            context,
+            MintOptions::default(),
+        )
     }
 
     /// Verify a capability token for a target and operation.

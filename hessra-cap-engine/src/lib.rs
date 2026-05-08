@@ -11,11 +11,16 @@
 pub mod context;
 pub mod engine;
 pub mod error;
+pub mod resolver;
 pub mod types;
 
 pub use context::{ContextToken, HessraContext};
 pub use engine::CapabilityEngine;
 pub use error::EngineError;
+pub use resolver::{
+    ArgsResolver, ArgsResolverBuilder, DesignationContext, DesignationResolver, NoopResolver,
+    ResolverError,
+};
 pub use types::{
     AnchorBinding, CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions,
     MintResult, ObjectId, Operation, PolicyBackend, PolicyDecision, SessionConfig,

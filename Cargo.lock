@@ -441,6 +441,7 @@ dependencies = [
  "hessra-cap-token",
  "hessra-identity-token",
  "hessra-token-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -454,6 +455,7 @@ dependencies = [
  "hessra-token-core",
  "hex",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
