@@ -1,12 +1,15 @@
 //! The capability engine: orchestrates policy evaluation, token minting, and verification.
 
 use hessra_cap_schema::{RESERVED_LABELS, SchemaRegistry};
-use hessra_cap_token::{CapabilityVerifier, DesignationBuilder, HessraCapability};
+use hessra_cap_token::{
+    CapabilityVerifier, DesignationBuilder, HessraCapability, get_capability_revocation_id,
+};
 use hessra_identity_token::{HessraIdentity, IdentityVerifier};
 use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 
 use crate::context::{self, ContextToken, HessraContext};
 use crate::error::EngineError;
+use crate::facet::{FACET_LABEL, FacetMap, generate_facet_uuid};
 use crate::resolver::{DesignationContext, DesignationResolver, NoopResolver};
 use crate::types::{
     CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
@@ -30,6 +33,8 @@ pub struct CapabilityEngine<P: PolicyBackend> {
     schema: SchemaRegistry,
     resolver: Box<dyn DesignationResolver>,
     keypair: KeyPair,
+    facets_enabled: bool,
+    facet_map: FacetMap,
 }
 
 impl<P: PolicyBackend> CapabilityEngine<P> {
@@ -42,6 +47,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             schema: SchemaRegistry::new(),
             resolver: Box::new(NoopResolver),
             keypair,
+            facets_enabled: false,
+            facet_map: FacetMap::new(),
         }
     }
 
@@ -56,6 +63,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             schema: SchemaRegistry::new(),
             resolver: Box::new(NoopResolver),
             keypair: KeyPair::new(),
+            facets_enabled: false,
+            facet_map: FacetMap::new(),
         }
     }
 
@@ -82,6 +91,35 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     {
         self.resolver = Box::new(resolver);
         self
+    }
+
+    /// Enable forwarding facets on this engine. Once enabled, every minted
+    /// capability gets a fresh `designation("facet", <uuid>)` attached and
+    /// the engine records `(authority-block revocation id, facet uuid)` in
+    /// its in-memory [`FacetMap`].
+    ///
+    /// The non-consuming verify path
+    /// ([`Self::verify_capability`] / [`Self::verify_designated_capability`])
+    /// auto-supplies the matching fact from the map when present, so existing
+    /// callers continue to work unchanged. The consuming variants
+    /// ([`Self::verify_and_consume_capability`] /
+    /// [`Self::verify_and_consume_designated_capability`]) additionally
+    /// remove the entry on a successful verification, giving single-use-on-ack
+    /// semantics suitable for JIT-mint-at-dispatch.
+    pub fn with_facets(mut self) -> Self {
+        self.facets_enabled = true;
+        self
+    }
+
+    /// A handle to the facet map. The map is shared by clone, so the returned
+    /// handle observes the same state as the engine.
+    pub fn facet_map(&self) -> FacetMap {
+        self.facet_map.clone()
+    }
+
+    /// Whether forwarding facets are enabled on this engine.
+    pub fn facets_enabled(&self) -> bool {
+        self.facets_enabled
     }
 
     /// Get the engine's public key (for token verification).
@@ -184,20 +222,35 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     ///
     /// This is capability-first verification: no subject is required.
     /// The token IS the proof of authorization.
+    ///
+    /// When forwarding facets are enabled on the engine, this method
+    /// auto-supplies the matching `designation("facet", <uuid>)` fact from
+    /// the facet map (if the token's authority-block revocation id is
+    /// registered). This is the non-consuming path; the entry stays in the
+    /// map for subsequent verifications. Use
+    /// [`Self::verify_and_consume_capability`] for single-use semantics.
     pub fn verify_capability(
         &self,
         token: &str,
         target: &ObjectId,
         operation: &Operation,
     ) -> Result<(), EngineError> {
-        CapabilityVerifier::new(
-            token.to_string(),
-            self.keypair.public(),
-            target.as_str().to_string(),
-            operation.as_str().to_string(),
-        )
-        .verify()
-        .map_err(EngineError::Token)
+        self.verify_designated_capability(token, target, operation, &[])
+    }
+
+    /// Verify a capability and atomically remove its facet entry from the
+    /// engine's facet map on success. Single-use-on-ack: a second call sees
+    /// no entry and the cap fails verification.
+    ///
+    /// If forwarding facets are not enabled this method behaves exactly like
+    /// [`Self::verify_capability`].
+    pub fn verify_and_consume_capability(
+        &self,
+        token: &str,
+        target: &ObjectId,
+        operation: &Operation,
+    ) -> Result<(), EngineError> {
+        self.verify_and_consume_designated_capability(token, target, operation, &[])
     }
 
     /// Mint a capability token with additional restrictions.
@@ -385,7 +438,25 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             token = self.attenuate_with_designations(&token, &combined)?;
         }
 
-        // Step 6: Auto-apply exposure if the target has data classifications.
+        // Step 6: If forwarding facets are enabled, attach a fresh facet
+        // designation and register it in the engine's facet map keyed by the
+        // authority-block revocation id.
+        if self.facets_enabled {
+            let rev_id = get_capability_revocation_id(token.clone(), self.keypair.public())
+                .map_err(EngineError::Token)?
+                .to_hex();
+            let facet_uuid = generate_facet_uuid();
+            self.facet_map.register(rev_id, facet_uuid.clone());
+            token = self.attenuate_with_designations(
+                &token,
+                &[Designation {
+                    label: FACET_LABEL.to_string(),
+                    value: facet_uuid,
+                }],
+            )?;
+        }
+
+        // Step 7: Auto-apply exposure if the target has data classifications.
         let updated_context = if let Some(ctx) = context {
             let classifications = self.policy.classification(target);
             if classifications.is_empty() {
@@ -421,6 +492,14 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// this capability is anchored at." Anchor is treated as a regular
     /// designation at verify time; the engine does not auto-supply the
     /// verifier's identity.
+    ///
+    /// When forwarding facets are enabled on the engine and the token's
+    /// authority-block revocation id is present in the facet map, the engine
+    /// automatically supplies the matching `designation("facet", <uuid>)`
+    /// fact alongside the caller-supplied designations. This is the
+    /// non-consuming path; the entry stays in the map. Use
+    /// [`Self::verify_and_consume_designated_capability`] for the
+    /// single-use-on-ack variant.
     pub fn verify_designated_capability(
         &self,
         token: &str,
@@ -428,6 +507,53 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         operation: &Operation,
         designations: &[Designation],
     ) -> Result<(), EngineError> {
+        self.run_verify(token, target, operation, designations, false)?;
+        Ok(())
+    }
+
+    /// Verify a designated capability and atomically remove its facet entry
+    /// from the engine's facet map on success. Single-use-on-ack semantics.
+    /// If forwarding facets are not enabled this is equivalent to
+    /// [`Self::verify_designated_capability`].
+    pub fn verify_and_consume_designated_capability(
+        &self,
+        token: &str,
+        target: &ObjectId,
+        operation: &Operation,
+        designations: &[Designation],
+    ) -> Result<(), EngineError> {
+        self.run_verify(token, target, operation, designations, true)?;
+        Ok(())
+    }
+
+    /// Internal verify driver. Auto-supplies the facet designation from the
+    /// engine's facet map when facets are enabled and the cap's authority
+    /// revocation id is present. If `consume` is true and verification
+    /// succeeds, atomically removes the entry from the map after the
+    /// verifier acknowledges success.
+    fn run_verify(
+        &self,
+        token: &str,
+        target: &ObjectId,
+        operation: &Operation,
+        designations: &[Designation],
+        consume: bool,
+    ) -> Result<(), EngineError> {
+        // Look up the facet (if any) before running the verifier, so we
+        // know which entry to consume on success.
+        let facet_rev_id = if self.facets_enabled {
+            let rev_id = get_capability_revocation_id(token.to_string(), self.keypair.public())
+                .map_err(EngineError::Token)?
+                .to_hex();
+            if self.facet_map.lookup(&rev_id).is_some() {
+                Some(rev_id)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut verifier = CapabilityVerifier::new(
             token.to_string(),
             self.keypair.public(),
@@ -439,7 +565,23 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             verifier = verifier.with_designation(d.label.clone(), d.value.clone());
         }
 
-        verifier.verify().map_err(EngineError::Token)
+        // Auto-supply the facet fact when the engine has one for this token.
+        if let Some(rev_id) = &facet_rev_id
+            && let Some(facet_uuid) = self.facet_map.lookup(rev_id)
+        {
+            verifier = verifier.with_designation(FACET_LABEL.to_string(), facet_uuid);
+        }
+
+        verifier.verify().map_err(EngineError::Token)?;
+
+        // The verifier acknowledged success; only now remove the facet
+        // entry. A panic, error return, or process death before this point
+        // leaves the map untouched and the cap retryable.
+        if consume && let Some(rev_id) = facet_rev_id {
+            self.facet_map.consume(&rev_id);
+        }
+
+        Ok(())
     }
 
     // =========================================================================

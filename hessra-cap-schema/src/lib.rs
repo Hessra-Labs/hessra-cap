@@ -19,6 +19,10 @@
 //!   policy (`anchor_to_subject = true` or `anchor = "<principal>"`) or via
 //!   `MintOptions.anchor`. Implemented in the token using the same designation
 //!   mechanism as application labels but treated as a distinct concept.
+//! - `"facet"`: a per-capability ULID-style identifier the engine attaches
+//!   when forwarding facets are enabled. Pairs with an in-memory map the
+//!   issuer-and-verifier engine consults, giving per-cap revocation and
+//!   single-use-on-ack semantics.
 //!
 //! See [`RESERVED_LABELS`].
 
@@ -34,7 +38,7 @@ use thiserror::Error;
 ///
 /// When a new label is added here it must also be wired through the engine's
 /// dedicated path. Adding a string to this constant alone is not enough.
-pub const RESERVED_LABELS: &[&str] = &["anchor"];
+pub const RESERVED_LABELS: &[&str] = &["anchor", "facet"];
 
 /// The schema for a single target object: the operations it exposes and the
 /// designations each operation requires.
@@ -364,6 +368,22 @@ operations = [
         let err = SchemaRegistry::from_toml(toml).expect_err("must reject anchor");
         match err {
             SchemaError::ReservedLabel { label, .. } => assert_eq!(label, "anchor"),
+            other => panic!("wrong error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn facet_in_required_designations_is_rejected() {
+        let toml = r#"
+[[targets]]
+id = "tool:web-search"
+operations = [
+  { name = "invoke", required_designations = ["facet"] },
+]
+"#;
+        let err = SchemaRegistry::from_toml(toml).expect_err("must reject facet");
+        match err {
+            SchemaError::ReservedLabel { label, .. } => assert_eq!(label, "facet"),
             other => panic!("wrong error variant: {other:?}"),
         }
     }

@@ -11,12 +11,14 @@
 pub mod context;
 pub mod engine;
 pub mod error;
+pub mod facet;
 pub mod resolver;
 pub mod types;
 
 pub use context::{ContextToken, HessraContext};
 pub use engine::CapabilityEngine;
 pub use error::EngineError;
+pub use facet::FacetMap;
 pub use resolver::{
     ArgsResolver, ArgsResolverBuilder, AuthSession, CompositeResolver, CompositeResolverBuilder,
     DesignationContext, DesignationResolver, Event, EventResolver, EventResolverBuilder,

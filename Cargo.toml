@@ -26,3 +26,4 @@ hex = "0.4"
 toml = "0.8"
 glob-match = "0.2"
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
