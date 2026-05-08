@@ -391,13 +391,21 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             }
         };
 
-        // Step 2: Compute the union of designations attached at mint.
+        // Step 2: Delegated identity chain check. Every ancestor of `subject`
+        // must independently hold a grant for `(target, operation)` for the
+        // mint to proceed. Encodes the model's "sub-identity capabilities
+        // bounded by parent identity capabilities" property as a structural
+        // mint-time check, giving transitive revocation for free: removing
+        // a grant from an ancestor invalidates descendants on next mint.
+        self.walk_chain(subject, target, operation)?;
+
+        // Step 3: Compute the union of designations attached at mint.
         let mut combined: Vec<Designation> =
             Vec::with_capacity(static_designations.len() + caller_designations.len());
         combined.extend(static_designations);
         combined.extend(caller_designations.iter().cloned());
 
-        // Step 3: Enforce required_designations from the schema, excluding
+        // Step 4: Enforce required_designations from the schema, excluding
         // reserved labels (handled separately).
         if let Some(required) = self
             .schema
@@ -417,7 +425,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             }
         }
 
-        // Step 4: Build and issue. Caller's options.anchor overrides policy's.
+        // Step 5: Build and issue. Caller's options.anchor overrides policy's.
         let time_config = options.time_config.unwrap_or_default();
         let mut builder = HessraCapability::new(
             subject.as_str().to_string(),
@@ -433,12 +441,12 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             .issue(&self.keypair)
             .map_err(|e| EngineError::TokenOperation(format!("failed to mint capability: {e}")))?;
 
-        // Step 5: Attach the union of designations via attenuation.
+        // Step 6: Attach the union of designations via attenuation.
         if !combined.is_empty() {
             token = self.attenuate_with_designations(&token, &combined)?;
         }
 
-        // Step 6: If forwarding facets are enabled, attach a fresh facet
+        // Step 7: If forwarding facets are enabled, attach a fresh facet
         // designation and register it in the engine's facet map keyed by the
         // authority-block revocation id.
         if self.facets_enabled {
@@ -456,7 +464,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             )?;
         }
 
-        // Step 7: Auto-apply exposure if the target has data classifications.
+        // Step 8: Auto-apply exposure if the target has data classifications.
         let updated_context = if let Some(ctx) = context {
             let classifications = self.policy.classification(target);
             if classifications.is_empty() {
@@ -523,6 +531,36 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         designations: &[Designation],
     ) -> Result<(), EngineError> {
         self.run_verify(token, target, operation, designations, true)?;
+        Ok(())
+    }
+
+    /// Walk the parent chain of `subject` and verify every ancestor holds a
+    /// grant for `(target, operation)`. Returns
+    /// [`EngineError::ChainCheckFailed`] for the first ancestor missing the
+    /// grant.
+    ///
+    /// This enforces "sub-identity ⊆ parent" as a structural mint-time check
+    /// per the model's §4.1: removing a grant from any ancestor invalidates
+    /// all descendants on the next mint (transitive revocation, live policy).
+    /// Cycle safety comes from policy load (`PolicyConfigError::ParentCycle`).
+    fn walk_chain(
+        &self,
+        subject: &ObjectId,
+        target: &ObjectId,
+        operation: &Operation,
+    ) -> Result<(), EngineError> {
+        let mut cursor = self.policy.parent(subject);
+        while let Some(ancestor) = cursor {
+            if !self.policy.has_grant(&ancestor, target, operation) {
+                return Err(EngineError::ChainCheckFailed {
+                    subject: subject.clone(),
+                    ancestor: ancestor.clone(),
+                    target: target.clone(),
+                    operation: operation.clone(),
+                });
+            }
+            cursor = self.policy.parent(&ancestor);
+        }
         Ok(())
     }
 

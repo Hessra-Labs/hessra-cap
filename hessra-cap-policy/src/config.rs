@@ -23,6 +23,16 @@ pub enum PolicyConfigError {
         target: String,
         anchor: String,
     },
+    #[error(
+        "object '{subject}' declares parent '{parent}', which is not a known principal in this policy"
+    )]
+    UnknownParent { subject: String, parent: String },
+    #[error(
+        "parent chain for object '{}' forms a cycle: {}",
+        chain.first().map(String::as_str).unwrap_or("?"),
+        chain.join(" -> "),
+    )]
+    ParentCycle { chain: Vec<String> },
 }
 
 /// Top-level policy configuration.
@@ -58,6 +68,13 @@ pub struct ObjectConfig {
     /// The object's capability grants.
     #[serde(default)]
     pub capabilities: Vec<CapabilityConfig>,
+
+    /// Optional parent principal id. When set, this object is a sub-identity
+    /// of `parent`, and the engine's chain check requires `parent` to hold
+    /// every capability minted for this object. Independent of
+    /// [`Self::can_delegate`].
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 /// Identity token configuration for an object.
@@ -177,6 +194,44 @@ impl PolicyConfig {
                         target: cap.target.clone(),
                         anchor: anchor.clone(),
                     });
+                }
+            }
+        }
+
+        // Parent declarations: every named parent must exist, and chains must
+        // be acyclic. Build a parent lookup once for both checks.
+        let parent_of: std::collections::HashMap<&str, &str> = self
+            .objects
+            .iter()
+            .filter_map(|o| o.parent.as_deref().map(|p| (o.id.as_str(), p)))
+            .collect();
+
+        for obj in &self.objects {
+            let Some(parent) = obj.parent.as_deref() else {
+                continue;
+            };
+            if !known_principals.contains(parent) {
+                return Err(PolicyConfigError::UnknownParent {
+                    subject: obj.id.clone(),
+                    parent: parent.to_string(),
+                });
+            }
+
+            // Cycle detection: walk parent links from this object up to a root.
+            // If we revisit any object already in the chain, we have a cycle.
+            let mut chain: Vec<String> = vec![obj.id.clone()];
+            let mut seen: std::collections::HashSet<&str> =
+                std::collections::HashSet::from([obj.id.as_str()]);
+            let mut cursor: &str = parent;
+            loop {
+                if !seen.insert(cursor) {
+                    chain.push(cursor.to_string());
+                    return Err(PolicyConfigError::ParentCycle { chain });
+                }
+                chain.push(cursor.to_string());
+                match parent_of.get(cursor) {
+                    Some(next) => cursor = next,
+                    None => break,
                 }
             }
         }

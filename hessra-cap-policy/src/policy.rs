@@ -28,6 +28,7 @@ pub struct CListPolicy {
 struct ObjectEntry {
     can_delegate: bool,
     capabilities: Vec<CapEntry>,
+    parent: Option<String>,
 }
 
 struct CapEntry {
@@ -45,6 +46,7 @@ impl CListPolicy {
         for obj in config.objects {
             let entry = ObjectEntry {
                 can_delegate: obj.can_delegate,
+                parent: obj.parent.clone(),
                 capabilities: obj
                     .capabilities
                     .into_iter()
@@ -237,6 +239,12 @@ impl PolicyBackend for CListPolicy {
             .get(subject.as_str())
             .map(|obj| obj.can_delegate)
             .unwrap_or(false)
+    }
+
+    fn parent(&self, subject: &ObjectId) -> Option<ObjectId> {
+        self.objects
+            .get(subject.as_str())
+            .and_then(|obj| obj.parent.as_deref().map(ObjectId::new))
     }
 
     fn all_grants(&self) -> Vec<(ObjectId, CapabilityGrant)> {

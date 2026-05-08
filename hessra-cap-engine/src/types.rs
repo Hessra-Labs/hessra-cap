@@ -279,4 +279,31 @@ pub trait PolicyBackend: Send + Sync {
     fn all_grants(&self) -> Vec<(ObjectId, CapabilityGrant)> {
         Vec::new()
     }
+
+    /// The immediate parent principal of `subject` in the principal graph,
+    /// if `subject` is a sub-identity. Returns `None` for root principals or
+    /// principals not declared in this backend.
+    ///
+    /// Used by the engine's chain check at mint time. The default returns
+    /// `None`, modeling a flat principal graph; backends that represent
+    /// parent-child relationships (e.g., CList via `ObjectConfig.parent`)
+    /// should override this.
+    fn parent(&self, _subject: &ObjectId) -> Option<ObjectId> {
+        None
+    }
+
+    /// Whether `subject` holds a grant for `(target, operation)`, ignoring
+    /// any current exposure context. Used by the engine's chain check to
+    /// verify ancestor authority without conflating exposure (which is the
+    /// requesting subject's own running state, not an inherited property).
+    ///
+    /// The default delegates to `evaluate(..., &[])` and matches
+    /// `PolicyDecision::Granted { .. }`. Backends with a more efficient
+    /// capability-space lookup may override.
+    fn has_grant(&self, subject: &ObjectId, target: &ObjectId, operation: &Operation) -> bool {
+        matches!(
+            self.evaluate(subject, target, operation, &[]),
+            PolicyDecision::Granted { .. },
+        )
+    }
 }

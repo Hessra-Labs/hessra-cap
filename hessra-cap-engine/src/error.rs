@@ -74,4 +74,18 @@ pub enum EngineError {
     /// A designation resolver failed during a `mint_with_context` call.
     #[error("resolver error: {0}")]
     Resolver(#[from] ResolverError),
+
+    /// The mint failed the delegated identity chain check: an ancestor of
+    /// `subject` does not hold a grant for `(target, operation)`. This
+    /// enforces "sub-identity capabilities ⊆ parent identity capabilities"
+    /// transitively.
+    #[error(
+        "chain check failed: ancestor '{ancestor}' of '{subject}' does not have grant for '{operation}' on '{target}'"
+    )]
+    ChainCheckFailed {
+        subject: ObjectId,
+        ancestor: ObjectId,
+        target: ObjectId,
+        operation: Operation,
+    },
 }
