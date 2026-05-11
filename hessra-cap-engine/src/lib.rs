@@ -8,6 +8,12 @@
 //! - Context tokens for information flow control (exposure tracking)
 //! - `CapabilityEngine` that orchestrates minting, verification, and policy evaluation
 
+// EngineError is a rich, structured error type. The `result_large_err` lint
+// would push us to box variants for clippy's stack-size threshold; we prefer
+// the structured variants and accept the slightly larger Result on engine
+// paths. Mint/verify are not hot enough for the size to matter in practice.
+#![allow(clippy::result_large_err)]
+
 pub mod context;
 pub mod engine;
 pub mod error;
@@ -17,7 +23,7 @@ pub mod types;
 
 pub use context::{ContextToken, HessraContext};
 pub use engine::CapabilityEngine;
-pub use error::EngineError;
+pub use error::{ChainCheckFailure, EngineError};
 pub use facet::FacetMap;
 pub use resolver::{
     ArgsResolver, ArgsResolverBuilder, AuthSession, CompositeResolver, CompositeResolverBuilder,

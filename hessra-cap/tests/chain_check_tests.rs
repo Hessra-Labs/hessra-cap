@@ -1,7 +1,8 @@
 //! Integration tests for the delegated identity chain check at mint time.
 
 use hessra_cap::{
-    CListPolicy, CapabilityEngine, EngineError, ObjectId, Operation, PolicyConfigError,
+    CListPolicy, CapabilityEngine, ChainCheckFailure, Designation, EngineError, ObjectId,
+    Operation, PolicyConfigError,
 };
 
 #[test]
@@ -300,4 +301,144 @@ capabilities = [
             None,
         )
         .expect("mint succeeds regardless of parent's can_delegate");
+}
+
+#[test]
+fn chain_check_enforces_parent_designation_envelope() {
+    // Parent declares the grant with a static designation tenant_id=acme.
+    // Child declares the same grant with a different static designation
+    // tenant_id=other. A child mint would attach tenant_id=other, exceeding
+    // the parent's envelope on the tenant_id label. The chain check must
+    // reject that mint with DesignationNotCovered naming the parent's
+    // required (label, value).
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "user:jake"
+capabilities = [
+    { target = "tool:web-search", operations = ["invoke"], designations = [{ label = "tenant_id", value = "acme" }] },
+]
+
+[[objects]]
+id = "user:jake:ci_cd"
+parent = "user:jake"
+capabilities = [
+    { target = "tool:web-search", operations = ["invoke"], designations = [{ label = "tenant_id", value = "other" }] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let engine = CapabilityEngine::with_generated_keys(policy);
+
+    let err = match engine.mint_capability(
+        &ObjectId::new("user:jake:ci_cd"),
+        &ObjectId::new("tool:web-search"),
+        &Operation::new("invoke"),
+        None,
+    ) {
+        Ok(_) => panic!("expected chain check to reject exceeding the parent envelope"),
+        Err(e) => e,
+    };
+    match err {
+        EngineError::ChainCheckFailed {
+            ancestor, reason, ..
+        } => {
+            assert_eq!(ancestor.as_str(), "user:jake");
+            match reason {
+                ChainCheckFailure::DesignationNotCovered { label, value } => {
+                    assert_eq!(label, "tenant_id");
+                    assert_eq!(value, "acme");
+                }
+                other => panic!("wrong reason: {other:?}"),
+            }
+        }
+        other => panic!("wrong error: {other:?}"),
+    }
+}
+
+#[test]
+fn chain_check_allows_when_caller_designations_cover_parent_envelope() {
+    // Parent requires tenant_id=acme. Child's grant doesn't pre-declare it.
+    // Caller supplies tenant_id=acme via mint_designated_capability, which
+    // covers the parent's envelope, and the mint succeeds.
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "user:jake"
+capabilities = [
+    { target = "tool:web-search", operations = ["invoke"], designations = [{ label = "tenant_id", value = "acme" }] },
+]
+
+[[objects]]
+id = "user:jake:ci_cd"
+parent = "user:jake"
+capabilities = [
+    { target = "tool:web-search", operations = ["invoke"] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let engine = CapabilityEngine::with_generated_keys(policy);
+
+    engine
+        .mint_designated_capability(
+            &ObjectId::new("user:jake:ci_cd"),
+            &ObjectId::new("tool:web-search"),
+            &Operation::new("invoke"),
+            &[Designation {
+                label: "tenant_id".into(),
+                value: "acme".into(),
+            }],
+            None,
+        )
+        .expect("caller-supplied designation covers parent's envelope");
+}
+
+#[test]
+fn chain_check_rejects_when_caller_designation_value_disagrees() {
+    // Parent requires tenant_id=acme; caller supplies tenant_id=other.
+    // Even though the label is covered, the value disagrees, so the parent's
+    // envelope is exceeded.
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "user:jake"
+capabilities = [
+    { target = "tool:web-search", operations = ["invoke"], designations = [{ label = "tenant_id", value = "acme" }] },
+]
+
+[[objects]]
+id = "user:jake:ci_cd"
+parent = "user:jake"
+capabilities = [
+    { target = "tool:web-search", operations = ["invoke"] },
+]
+"#,
+    )
+    .expect("policy parses");
+
+    let engine = CapabilityEngine::with_generated_keys(policy);
+
+    let err = match engine.mint_designated_capability(
+        &ObjectId::new("user:jake:ci_cd"),
+        &ObjectId::new("tool:web-search"),
+        &Operation::new("invoke"),
+        &[Designation {
+            label: "tenant_id".into(),
+            value: "other".into(),
+        }],
+        None,
+    ) {
+        Ok(_) => panic!("expected rejection"),
+        Err(e) => e,
+    };
+    assert!(matches!(
+        err,
+        EngineError::ChainCheckFailed {
+            reason: ChainCheckFailure::DesignationNotCovered { .. },
+            ..
+        }
+    ));
 }

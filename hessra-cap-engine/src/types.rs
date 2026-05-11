@@ -297,13 +297,27 @@ pub trait PolicyBackend: Send + Sync {
     /// verify ancestor authority without conflating exposure (which is the
     /// requesting subject's own running state, not an inherited property).
     ///
-    /// The default delegates to `evaluate(..., &[])` and matches
-    /// `PolicyDecision::Granted { .. }`. Backends with a more efficient
-    /// capability-space lookup may override.
+    /// The default delegates to [`Self::lookup_grant`]. Backends may override
+    /// for efficiency.
     fn has_grant(&self, subject: &ObjectId, target: &ObjectId, operation: &Operation) -> bool {
-        matches!(
-            self.evaluate(subject, target, operation, &[]),
-            PolicyDecision::Granted { .. },
-        )
+        self.lookup_grant(subject, target, operation).is_some()
+    }
+
+    /// Look up the full grant `subject` holds for `(target, operation)`, if
+    /// any. The returned [`CapabilityGrant`] carries the grant's static
+    /// designations and anchor binding, which the engine uses for
+    /// designation-containment enforcement during the chain check.
+    ///
+    /// The default scans [`Self::list_grants`]. Backends with a direct
+    /// `(subject, target, op) -> grant` lookup may override for efficiency.
+    fn lookup_grant(
+        &self,
+        subject: &ObjectId,
+        target: &ObjectId,
+        operation: &Operation,
+    ) -> Option<CapabilityGrant> {
+        self.list_grants(subject)
+            .into_iter()
+            .find(|g| g.target == *target && g.operations.iter().any(|o| o == operation))
     }
 }

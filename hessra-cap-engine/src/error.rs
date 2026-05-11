@@ -76,16 +76,35 @@ pub enum EngineError {
     Resolver(#[from] ResolverError),
 
     /// The mint failed the delegated identity chain check: an ancestor of
-    /// `subject` does not hold a grant for `(target, operation)`. This
-    /// enforces "sub-identity capabilities ⊆ parent identity capabilities"
-    /// transitively.
+    /// `subject` either does not hold a grant for `(target, operation)`, or
+    /// holds a grant whose static designations are not all present in the
+    /// capability being minted. This enforces "sub-identity capabilities ⊆
+    /// parent identity capabilities" transitively, including the per-grant
+    /// designation envelope.
     #[error(
-        "chain check failed: ancestor '{ancestor}' of '{subject}' does not have grant for '{operation}' on '{target}'"
+        "chain check failed: ancestor '{ancestor}' of '{subject}' does not encompass '{operation}' on '{target}': {reason}"
     )]
     ChainCheckFailed {
         subject: ObjectId,
         ancestor: ObjectId,
         target: ObjectId,
         operation: Operation,
+        reason: ChainCheckFailure,
     },
+}
+
+/// Why the chain check rejected a mint.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ChainCheckFailure {
+    /// The ancestor has no grant for the requested target+operation.
+    #[error("no grant for target/operation")]
+    NoGrant,
+    /// The ancestor has a grant for the requested target+operation, but it
+    /// carries a static designation that the cap being minted does not
+    /// include (or carries with a different value). The cap would therefore
+    /// exceed the ancestor's envelope on that label.
+    #[error(
+        "ancestor grant requires designation '{label}'='{value}' which the minted cap does not include"
+    )]
+    DesignationNotCovered { label: String, value: String },
 }

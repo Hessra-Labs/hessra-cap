@@ -279,6 +279,13 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// through its own mechanisms (e.g., enterprise RBAC, custom domain logic).
     /// For the fully-managed path that includes policy evaluation, use
     /// `mint_capability` or `mint_capability_with_options` instead.
+    ///
+    /// Engine-wide invariants still apply: if [`Self::with_facets`] is set,
+    /// the issued capability gets a fresh facet attached and registered in
+    /// the engine's facet map. Policy, schema, and chain checks are
+    /// deliberately bypassed (that is the point of this path); facets are an
+    /// engine-level revocation mechanism rather than a policy-level check,
+    /// so they continue to apply.
     pub fn issue_capability(
         &self,
         subject: &ObjectId,
@@ -298,9 +305,28 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             builder = builder.anchor_bound(anchor.as_str().to_string());
         }
 
-        builder
+        let mut token = builder
             .issue(&self.keypair)
-            .map_err(|e| EngineError::TokenOperation(format!("failed to issue capability: {e}")))
+            .map_err(|e| EngineError::TokenOperation(format!("failed to issue capability: {e}")))?;
+
+        // Engine-level invariant: facets attach to every cap when enabled,
+        // regardless of which mint path produced the cap.
+        if self.facets_enabled {
+            let rev_id = get_capability_revocation_id(token.clone(), self.keypair.public())
+                .map_err(EngineError::Token)?
+                .to_hex();
+            let facet_uuid = generate_facet_uuid();
+            self.facet_map.register(rev_id, facet_uuid.clone());
+            token = self.attenuate_with_designations(
+                &token,
+                &[Designation {
+                    label: FACET_LABEL.to_string(),
+                    value: facet_uuid,
+                }],
+            )?;
+        }
+
+        Ok(token)
     }
 
     // =========================================================================
@@ -391,19 +417,21 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             }
         };
 
-        // Step 2: Delegated identity chain check. Every ancestor of `subject`
-        // must independently hold a grant for `(target, operation)` for the
-        // mint to proceed. Encodes the model's "sub-identity capabilities
-        // bounded by parent identity capabilities" property as a structural
-        // mint-time check, giving transitive revocation for free: removing
-        // a grant from an ancestor invalidates descendants on next mint.
-        self.walk_chain(subject, target, operation)?;
-
-        // Step 3: Compute the union of designations attached at mint.
+        // Step 2: Compute the union of designations attached at mint.
         let mut combined: Vec<Designation> =
             Vec::with_capacity(static_designations.len() + caller_designations.len());
         combined.extend(static_designations);
         combined.extend(caller_designations.iter().cloned());
+
+        // Step 3: Delegated identity chain check. Every ancestor of `subject`
+        // must independently hold a grant for `(target, operation)` whose
+        // static designations are all present in the cap being minted. This
+        // encodes the model's "sub-identity capabilities bounded by parent
+        // identity capabilities" property as a structural mint-time check,
+        // giving transitive revocation for free: removing a grant from an
+        // ancestor (or narrowing its designation envelope) invalidates
+        // descendants on the next mint.
+        self.walk_chain(subject, target, operation, &combined)?;
 
         // Step 4: Enforce required_designations from the schema, excluding
         // reserved labels (handled separately).
@@ -535,29 +563,52 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     }
 
     /// Walk the parent chain of `subject` and verify every ancestor holds a
-    /// grant for `(target, operation)`. Returns
-    /// [`EngineError::ChainCheckFailed`] for the first ancestor missing the
-    /// grant.
+    /// grant for `(target, operation)` whose static designations are all
+    /// present in `combined`. Returns [`EngineError::ChainCheckFailed`] on
+    /// the first ancestor that fails either check.
     ///
     /// This enforces "sub-identity ⊆ parent" as a structural mint-time check
-    /// per the model's §4.1: removing a grant from any ancestor invalidates
-    /// all descendants on the next mint (transitive revocation, live policy).
-    /// Cycle safety comes from policy load (`PolicyConfigError::ParentCycle`).
+    /// per the model's §4.1, covering both target/operation authority and
+    /// the per-grant designation envelope: removing a grant or narrowing
+    /// its designations on any ancestor invalidates all descendants on the
+    /// next mint (transitive revocation, live policy). Cycle safety comes
+    /// from policy load (`PolicyConfigError::ParentCycle`).
     fn walk_chain(
         &self,
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
+        combined: &[Designation],
     ) -> Result<(), EngineError> {
         let mut cursor = self.policy.parent(subject);
         while let Some(ancestor) = cursor {
-            if !self.policy.has_grant(&ancestor, target, operation) {
+            let Some(grant) = self.policy.lookup_grant(&ancestor, target, operation) else {
                 return Err(EngineError::ChainCheckFailed {
                     subject: subject.clone(),
                     ancestor: ancestor.clone(),
                     target: target.clone(),
                     operation: operation.clone(),
+                    reason: crate::error::ChainCheckFailure::NoGrant,
                 });
+            };
+            // For every static designation the ancestor's grant requires,
+            // the cap being minted must include a matching (label, value).
+            for req in &grant.designations {
+                let covered = combined
+                    .iter()
+                    .any(|d| d.label == req.label && d.value == req.value);
+                if !covered {
+                    return Err(EngineError::ChainCheckFailed {
+                        subject: subject.clone(),
+                        ancestor: ancestor.clone(),
+                        target: target.clone(),
+                        operation: operation.clone(),
+                        reason: crate::error::ChainCheckFailure::DesignationNotCovered {
+                            label: req.label.clone(),
+                            value: req.value.clone(),
+                        },
+                    });
+                }
             }
             cursor = self.policy.parent(&ancestor);
         }
@@ -566,9 +617,9 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
 
     /// Internal verify driver. Auto-supplies the facet designation from the
     /// engine's facet map when facets are enabled and the cap's authority
-    /// revocation id is present. If `consume` is true and verification
-    /// succeeds, atomically removes the entry from the map after the
-    /// verifier acknowledges success.
+    /// revocation id is present. When `consume` is true, lookup, verify, and
+    /// removal happen under a single critical section so concurrent
+    /// consumers cannot both succeed against the same facet.
     fn run_verify(
         &self,
         token: &str,
@@ -577,49 +628,57 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         designations: &[Designation],
         consume: bool,
     ) -> Result<(), EngineError> {
-        // Look up the facet (if any) before running the verifier, so we
-        // know which entry to consume on success.
-        let facet_rev_id = if self.facets_enabled {
-            let rev_id = get_capability_revocation_id(token.to_string(), self.keypair.public())
-                .map_err(EngineError::Token)?
-                .to_hex();
-            if self.facet_map.lookup(&rev_id).is_some() {
-                Some(rev_id)
-            } else {
-                None
+        // Build the verifier shape once: target, operation, caller designations.
+        // The facet designation is auto-supplied at the call site (closure for
+        // the consume path, inline read for the non-consume path).
+        let build_verifier = |facet: Option<&str>| -> CapabilityVerifier {
+            let mut verifier = CapabilityVerifier::new(
+                token.to_string(),
+                self.keypair.public(),
+                target.as_str().to_string(),
+                operation.as_str().to_string(),
+            );
+            for d in designations {
+                verifier = verifier.with_designation(d.label.clone(), d.value.clone());
             }
-        } else {
-            None
+            if let Some(facet_uuid) = facet {
+                verifier =
+                    verifier.with_designation(FACET_LABEL.to_string(), facet_uuid.to_string());
+            }
+            verifier
         };
 
-        let mut verifier = CapabilityVerifier::new(
-            token.to_string(),
-            self.keypair.public(),
-            target.as_str().to_string(),
-            operation.as_str().to_string(),
-        );
-
-        for d in designations {
-            verifier = verifier.with_designation(d.label.clone(), d.value.clone());
+        if !self.facets_enabled {
+            // No facet wiring; build and verify without auto-supply.
+            return build_verifier(None).verify().map_err(EngineError::Token);
         }
 
-        // Auto-supply the facet fact when the engine has one for this token.
-        if let Some(rev_id) = &facet_rev_id
-            && let Some(facet_uuid) = self.facet_map.lookup(rev_id)
-        {
-            verifier = verifier.with_designation(FACET_LABEL.to_string(), facet_uuid);
+        // Facets are enabled. Extract the cap's authority-block revocation id
+        // so the facet map can be consulted.
+        let rev_id = get_capability_revocation_id(token.to_string(), self.keypair.public())
+            .map_err(EngineError::Token)?
+            .to_hex();
+
+        if consume {
+            // Consume path: lookup + verify + remove must be one critical
+            // section so two callers can't both verify successfully against
+            // the same entry. The closure runs under the facet map's lock;
+            // on Ok return, the helper removes the entry atomically. On Err,
+            // the entry is left in place to support retry with corrected
+            // inputs.
+            self.facet_map.verify_and_consume_atomic(&rev_id, |facet| {
+                build_verifier(facet).verify().map_err(EngineError::Token)
+            })
+        } else {
+            // Non-consume path: a stale read is harmless since nothing is
+            // removed. If the entry vanishes between lookup and verify
+            // (because a concurrent consume succeeded), verification will
+            // fail closed and the caller can retry.
+            let facet = self.facet_map.lookup(&rev_id);
+            build_verifier(facet.as_deref())
+                .verify()
+                .map_err(EngineError::Token)
         }
-
-        verifier.verify().map_err(EngineError::Token)?;
-
-        // The verifier acknowledged success; only now remove the facet
-        // entry. A panic, error return, or process death before this point
-        // leaves the map untouched and the cap retryable.
-        if consume && let Some(rev_id) = facet_rev_id {
-            self.facet_map.consume(&rev_id);
-        }
-
-        Ok(())
     }
 
     // =========================================================================

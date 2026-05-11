@@ -1,8 +1,12 @@
 //! Integration tests for forwarding facets.
 
 use hessra_cap::{
-    CListPolicy, CapabilityEngine, Designation, ObjectId, Operation, SchemaError, SchemaRegistry,
+    CListPolicy, CapabilityEngine, Designation, MintOptions, ObjectId, Operation, SchemaError,
+    SchemaRegistry,
 };
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 fn jake_can_invoke_web_search() -> CListPolicy {
     CListPolicy::from_toml(
@@ -270,4 +274,121 @@ operations = [{ name = "invoke", required_designations = ["facet"] }]
     )
     .expect_err("must reject facet");
     assert!(matches!(err, SchemaError::ReservedLabel { ref label, .. } if label == "facet"));
+}
+
+#[test]
+fn concurrent_verify_and_consume_admits_exactly_one_success() {
+    // Regression for the lookup/consume race: when N threads concurrently
+    // attempt verify_and_consume on the same cap, single-use semantics
+    // require that exactly one of them sees Ok; the rest must see Err.
+    let engine =
+        Arc::new(CapabilityEngine::with_generated_keys(jake_can_invoke_web_search()).with_facets());
+    let result = engine
+        .mint_capability(
+            &ObjectId::new("agent:jake"),
+            &ObjectId::new("tool:web-search"),
+            &Operation::new("invoke"),
+            None,
+        )
+        .expect("mint");
+    assert_eq!(engine.facet_map().len(), 1);
+
+    let token = Arc::new(result.token);
+    let successes = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let engine = Arc::clone(&engine);
+        let token = Arc::clone(&token);
+        let successes = Arc::clone(&successes);
+        let failures = Arc::clone(&failures);
+        handles.push(thread::spawn(move || {
+            match engine.verify_and_consume_capability(
+                token.as_str(),
+                &ObjectId::new("tool:web-search"),
+                &Operation::new("invoke"),
+            ) {
+                Ok(()) => {
+                    successes.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    failures.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("thread");
+    }
+
+    assert_eq!(
+        successes.load(Ordering::SeqCst),
+        1,
+        "exactly one consume should win the race",
+    );
+    assert_eq!(failures.load(Ordering::SeqCst), 15);
+    assert!(engine.facet_map().is_empty());
+}
+
+#[test]
+fn issue_capability_attaches_facet_when_enabled() {
+    // Regression for the direct-issuance bypass: with_facets must be an
+    // engine-wide invariant. issue_capability does not consult policy, but
+    // it must still register a facet and attach the designation so the
+    // resulting cap participates in the engine's revocation map.
+    let engine = CapabilityEngine::with_generated_keys(CListPolicy::empty()).with_facets();
+
+    let token = engine
+        .issue_capability(
+            &ObjectId::new("service:webapp"),
+            &ObjectId::new("api:posts"),
+            &Operation::new("read"),
+            MintOptions::default(),
+        )
+        .expect("issue");
+
+    // The facet map grew by one and the token now requires the auto-supplied
+    // facet at verify time.
+    assert_eq!(engine.facet_map().len(), 1);
+
+    // Non-consuming verify works: engine auto-supplies the facet.
+    engine
+        .verify_capability(&token, &ObjectId::new("api:posts"), &Operation::new("read"))
+        .expect("verify succeeds via auto-supplied facet");
+
+    // Consume removes the entry; second use fails closed.
+    engine
+        .verify_and_consume_capability(&token, &ObjectId::new("api:posts"), &Operation::new("read"))
+        .expect("first consume succeeds");
+    assert!(engine.facet_map().is_empty());
+
+    let second = engine.verify_and_consume_capability(
+        &token,
+        &ObjectId::new("api:posts"),
+        &Operation::new("read"),
+    );
+    assert!(
+        second.is_err(),
+        "second consume must fail after the entry is gone"
+    );
+}
+
+#[test]
+fn issue_capability_with_facets_disabled_is_unchanged() {
+    // The fix only attaches facets when the engine has them enabled.
+    // Without with_facets(), issue_capability keeps producing plain caps.
+    let engine = CapabilityEngine::with_generated_keys(CListPolicy::empty());
+    let token = engine
+        .issue_capability(
+            &ObjectId::new("service:webapp"),
+            &ObjectId::new("api:posts"),
+            &Operation::new("read"),
+            MintOptions::default(),
+        )
+        .expect("issue");
+    assert!(engine.facet_map().is_empty());
+    engine
+        .verify_capability(&token, &ObjectId::new("api:posts"), &Operation::new("read"))
+        .expect("verify of plain issued cap");
 }
