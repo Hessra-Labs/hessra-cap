@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hessra-cap-schema",
  "hessra-cap-token",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-policy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "glob-match",
  "hessra-cap-engine",
