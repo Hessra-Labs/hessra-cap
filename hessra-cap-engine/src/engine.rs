@@ -106,6 +106,30 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// [`Self::verify_and_consume_designated_capability`]) additionally
     /// remove the entry on a successful verification, giving single-use-on-ack
     /// semantics suitable for JIT-mint-at-dispatch.
+    ///
+    /// # Scope: forward-only, per-token
+    ///
+    /// Enabling facets affects capabilities **minted by this engine after
+    /// facets are enabled**. It does not retroactively require existing
+    /// non-faceted capabilities to appear in the facet map. The token itself
+    /// carries its verification requirements:
+    ///
+    /// - A faceted capability has a `designation("facet", _)` check embedded
+    ///   in its biscuit. If the engine's facet map has the entry, the engine
+    ///   auto-supplies the matching fact and verification proceeds. If the
+    ///   entry is absent (consumed, restart-wiped, or never registered) the
+    ///   embedded check cannot be satisfied and verification fails closed.
+    ///   This is the revocation, single-use, and restart-invalidation
+    ///   behavior facets exist to provide.
+    /// - A non-faceted capability has no facet check. Even on a
+    ///   facets-enabled engine with an empty map, verification succeeds for
+    ///   such a token because there is no embedded fact to satisfy. The
+    ///   capability never opted into facet enforcement.
+    ///
+    /// In short: map miss is fine only when the token itself does not
+    /// require a facet fact. This is what makes `with_facets()` safe to
+    /// turn on mid-deployment — it changes future issuance, not the meaning
+    /// of capabilities already in circulation.
     pub fn with_facets(mut self) -> Self {
         self.facets_enabled = true;
         self
@@ -620,6 +644,21 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// revocation id is present. When `consume` is true, lookup, verify, and
     /// removal happen under a single critical section so concurrent
     /// consumers cannot both succeed against the same facet.
+    ///
+    /// Absent-entry semantics (facets enabled, no map entry for the token):
+    /// - If the token has a `designation("facet", _)` check embedded
+    ///   (because some engine with facets enabled minted it), Biscuit
+    ///   verification fails closed: the engine has no fact to supply, the
+    ///   embedded check has no matching fact, the verify rejects. This is
+    ///   how revocation, single-use, and restart invalidation work.
+    /// - If the token has no facet check (it was minted by an engine
+    ///   without facets, or by a different signer entirely), verification
+    ///   proceeds normally because no fact needs to be supplied. The token
+    ///   itself never opted into facet enforcement.
+    ///
+    /// The engine does not inspect the token's contents to decide which case
+    /// applies; it lets Biscuit's logic decide based on whether the embedded
+    /// checks can be satisfied.
     fn run_verify(
         &self,
         token: &str,

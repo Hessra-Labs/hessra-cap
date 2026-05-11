@@ -160,13 +160,41 @@ mod tests {
     }
 
     #[test]
-    fn atomic_consume_when_entry_absent_passes_none() {
+    fn atomic_helper_passes_none_when_entry_absent() {
+        // Low-level test: when the map has no entry for the revocation id,
+        // the atomic helper invokes the closure with `None` and propagates
+        // whatever the closure returns. This does NOT mean "map miss is
+        // broadly OK" at the engine level. The engine's verify closure is
+        // the one that decides Ok or Err, and what it does depends on
+        // whether the token itself carries a facet check:
+        //
+        // - For a non-faceted token (no `designation("facet", _)` check
+        //   embedded), the closure runs the biscuit verifier without
+        //   supplying a facet fact. Biscuit has no facet check to satisfy,
+        //   verification succeeds, the closure returns Ok. This is the
+        //   "facets are forward-only" property: pre-existing tokens
+        //   verify normally on a facets-enabled engine.
+        //
+        // - For a faceted token whose entry has been removed (consumed,
+        //   restart-wiped, or never registered) the closure runs the
+        //   verifier without supplying the facet fact. Biscuit's embedded
+        //   facet check fails closed, the closure returns Err, and the
+        //   absent entry stays absent. This is the revocation /
+        //   single-use / restart-invalidation property facets exist to
+        //   provide.
+        //
+        // The helper itself doesn't know which case applies; it only
+        // surfaces `Option<&str>` to the closure. The integration tests in
+        // `tests/facet_tests.rs` cover both engine-level paths end to end.
         let map = FacetMap::new();
         let result = map.verify_and_consume_atomic("rev-missing", |facet| {
-            assert!(facet.is_none());
+            assert!(facet.is_none(), "helper hands None to the closure");
             Ok(())
         });
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "closure controls the outcome, not the helper"
+        );
     }
 
     #[test]

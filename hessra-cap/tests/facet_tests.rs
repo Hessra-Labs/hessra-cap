@@ -4,6 +4,8 @@ use hessra_cap::{
     CListPolicy, CapabilityEngine, Designation, MintOptions, ObjectId, Operation, SchemaError,
     SchemaRegistry,
 };
+use hessra_cap_token::HessraCapability;
+use hessra_token_core::{KeyPair, TokenTimeConfig};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -391,4 +393,54 @@ fn issue_capability_with_facets_disabled_is_unchanged() {
     engine
         .verify_capability(&token, &ObjectId::new("api:posts"), &Operation::new("read"))
         .expect("verify of plain issued cap");
+}
+
+#[test]
+fn facets_enabled_engine_still_honors_non_faceted_tokens() {
+    // The invariant `with_facets()` documents: enabling facets is forward-
+    // only. A token minted before facets were turned on (or by a different
+    // engine, or via any path that didn't attach a facet) still verifies
+    // on a facets-enabled engine, even though that engine's facet map has
+    // no entry for it. The token's biscuit carries no facet check, so the
+    // absent map entry is harmless.
+    //
+    // We construct this by minting the token raw (no engine involved) with
+    // a fresh keypair, then handing the same keypair to a facets-enabled
+    // CapabilityEngine. The engine's signature checks pass, the map is
+    // empty, and verification succeeds because there's nothing to satisfy.
+    let keypair = KeyPair::new();
+    let non_faceted_token = HessraCapability::new(
+        "agent:jake".to_string(),
+        "tool:web-search".to_string(),
+        "invoke".to_string(),
+        TokenTimeConfig::default(),
+    )
+    .issue(&keypair)
+    .expect("raw mint of a non-faceted token");
+
+    let engine = CapabilityEngine::new(jake_can_invoke_web_search(), keypair).with_facets();
+    assert!(engine.facets_enabled());
+    assert!(engine.facet_map().is_empty());
+
+    engine
+        .verify_capability(
+            &non_faceted_token,
+            &ObjectId::new("tool:web-search"),
+            &Operation::new("invoke"),
+        )
+        .expect("non-faceted token verifies on a facets-enabled engine with an empty map");
+
+    // The verify did not register or mutate anything; the map stayed empty.
+    assert!(engine.facet_map().is_empty());
+
+    // Consuming verify also succeeds — there's nothing to consume but the
+    // verifier still acknowledges, since no facet check is embedded.
+    engine
+        .verify_and_consume_capability(
+            &non_faceted_token,
+            &ObjectId::new("tool:web-search"),
+            &Operation::new("invoke"),
+        )
+        .expect("consume path on a non-faceted token is a no-op for the map");
+    assert!(engine.facet_map().is_empty());
 }
