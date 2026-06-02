@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "hessra-cap-schema",
  "hessra-cap-token",
@@ -540,9 +540,9 @@ dependencies = [
 
 [[package]]
 name = "hessra-context-token"
-version = "1.1.0"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8099b25f2e8dd121d70fea315f6ff9d7bfd4616a2e36c36362d0f78192dca06"
+checksum = "d00766a125c1bf2a3d9b05d3c4997d1d74fabe38f8c022711f8e294f53f37bca"
 dependencies = [
  "biscuit-auth",
  "chrono",

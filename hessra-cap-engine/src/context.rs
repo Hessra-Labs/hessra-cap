@@ -101,7 +101,7 @@ pub fn add_exposure_block(
 
     let new_token = hessra_context_token::add_exposure(
         context.token(),
-        keypair.public(),
+        keypair,
         &label_strings,
         source.as_str().to_string(),
     )
