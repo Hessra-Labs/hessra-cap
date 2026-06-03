@@ -57,6 +57,7 @@ impl ContextToken {
 pub struct HessraContext {
     subject: ObjectId,
     session_config: SessionConfig,
+    compound_rejects: Vec<(ExposureLabel, ExposureLabel)>,
 }
 
 impl HessraContext {
@@ -65,7 +66,16 @@ impl HessraContext {
         Self {
             subject,
             session_config,
+            compound_rejects: Vec::new(),
         }
+    }
+
+    /// Seed two-label compound reject rules into the authority block. Each pair
+    /// becomes a `reject if exposure(a), exposure(b)` rule that fires only when
+    /// both labels are asserted together at mint time.
+    pub fn with_compound_rejects(mut self, rules: Vec<(ExposureLabel, ExposureLabel)>) -> Self {
+        self.compound_rejects = rules;
+        self
     }
 
     /// Issues (builds and signs) the context token.
@@ -75,15 +85,43 @@ impl HessraContext {
             duration: self.session_config.ttl,
         };
 
-        let token = hessra_context_token::HessraContext::new(
+        let mut builder = hessra_context_token::HessraContext::new(
             self.subject.as_str().to_string(),
             time_config,
-        )
-        .issue(keypair)
-        .map_err(|e| EngineError::Context(format!("failed to mint context token: {e}")))?;
+        );
+        for (first, second) in &self.compound_rejects {
+            builder = builder
+                .with_compound_reject(first.as_str().to_string(), second.as_str().to_string());
+        }
+
+        let token = builder
+            .issue(keypair)
+            .map_err(|e| EngineError::Context(format!("failed to mint context token: {e}")))?;
 
         Ok(ContextToken::new(token, vec![]))
     }
+}
+
+/// Verify a context token while asserting `labels` as candidate
+/// `exposure({label})` facts. Returns `Ok(())` if no `reject if exposure(...)`
+/// rule in the token fires for the asserted facts, or
+/// [`EngineError::ExposureBlocked`] if one does (or the token is otherwise
+/// invalid). This is the single exposure-enforcement mechanism: the decision is
+/// made by the token's reject rules, not by the policy backend.
+pub fn verify_excluding(
+    token: &str,
+    public_key: PublicKey,
+    labels: &[ExposureLabel],
+    target: &ObjectId,
+) -> Result<(), EngineError> {
+    let mut verifier = hessra_context_token::ContextVerifier::new(token.to_string(), public_key);
+    for label in labels {
+        verifier = verifier.excludes(label.as_str().to_string());
+    }
+    verifier.verify().map_err(|_| EngineError::ExposureBlocked {
+        labels: labels.to_vec(),
+        target: target.clone(),
+    })
 }
 
 /// Add exposure labels to a context token.

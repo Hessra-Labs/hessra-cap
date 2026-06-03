@@ -262,7 +262,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("user:alice"),
         &ObjectId::new("api:users"),
         &Operation::new("read"),
-        None,
     );
     assert!(alice_read.is_granted());
     println!("Webapp policy: alice CAN read api:users");
@@ -271,7 +270,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("user:alice"),
         &ObjectId::new("api:users"),
         &Operation::new("write"),
-        None,
     );
     assert!(!alice_write.is_granted());
     println!("Webapp policy: alice CANNOT write api:users (restricted by webapp policy)");
@@ -281,7 +279,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("user:bob"),
         &ObjectId::new("api:users"),
         &Operation::new("write"),
-        None,
     );
     assert!(bob_write.is_granted());
     println!("Webapp policy: bob CAN write api:users");
@@ -290,7 +287,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("user:bob"),
         &ObjectId::new("api:orders"),
         &Operation::new("read"),
-        None,
     );
     assert!(!bob_orders.is_granted());
     println!("Webapp policy: bob CANNOT read api:orders (not in bob's grants)\n");

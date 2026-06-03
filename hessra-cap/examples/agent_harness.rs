@@ -92,12 +92,7 @@ impl<'e> AgentHarness<'e> {
     /// Check if a tool invocation would be allowed without minting a token.
     fn can_invoke(&self, tool: &ObjectId) -> bool {
         self.engine
-            .evaluate(
-                &self.agent_id,
-                tool,
-                &Operation::new("invoke"),
-                Some(&self.context),
-            )
+            .evaluate(&self.agent_id, tool, &Operation::new("invoke"))
             .is_granted()
     }
 
@@ -287,10 +282,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Attempting to mint the email capability gives a structured error.
     match harness.request_tool(&ObjectId::new("tool:email")) {
-        Err(EngineError::ExposureRestriction { label, target }) => {
-            println!("Blocked: exposure '{label}' prevents access to '{target}'");
+        Err(EngineError::ExposureBlocked { labels, target }) => {
+            println!("Blocked: exposure {labels:?} prevents access to '{target}'");
         }
-        other => panic!("Expected ExposureRestriction, got: {other:?}"),
+        other => panic!("Expected ExposureBlocked, got: {other:?}"),
     }
     println!("The lethal trifecta (tools + data + exfiltration) is prevented.\n");
 

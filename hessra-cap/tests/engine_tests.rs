@@ -1,8 +1,8 @@
 //! Integration tests for the Hessra Capability Engine.
 
 use hessra_cap::{
-    CListPolicy, CapabilityEngine, Designation, ExposureLabel, IdentityConfig, MintOptions,
-    ObjectId, Operation, PolicyDecision, SessionConfig, TokenTimeConfig,
+    CListPolicy, CapabilityEngine, Designation, EngineError, ExposureLabel, IdentityConfig,
+    MintOptions, ObjectId, Operation, SessionConfig, TokenTimeConfig,
 };
 
 fn test_engine() -> CapabilityEngine<CListPolicy> {
@@ -403,7 +403,6 @@ fn test_evaluate_without_minting() {
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:file-read"),
         &Operation::new("invoke"),
-        None,
     );
     assert!(decision.is_granted());
 
@@ -411,13 +410,14 @@ fn test_evaluate_without_minting() {
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:nonexistent"),
         &Operation::new("invoke"),
-        None,
     );
     assert!(!decision.is_granted());
 }
 
 #[test]
-fn test_evaluate_with_exposure() {
+fn test_exposure_blocks_mint() {
+    // Exposure no longer changes the grant decision; it blocks at mint time
+    // via the context token's reject rules.
     let engine = test_engine();
 
     let context = engine
@@ -428,14 +428,33 @@ fn test_evaluate_with_exposure() {
         .add_exposure(&context, &ObjectId::new("data:user-ssn"))
         .expect("Should add exposure");
 
+    // The grant itself is still granted (exposure is not a policy decision).
     let decision = engine.evaluate(
+        &ObjectId::new("agent:openclaw"),
+        &ObjectId::new("tool:web-search"),
+        &Operation::new("invoke"),
+    );
+    assert!(decision.is_granted());
+
+    // But minting with the exposed context is blocked by the token's reject
+    // rule (PII:SSN blocks tool:web-search).
+    let result = engine.mint_capability(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:web-search"),
         &Operation::new("invoke"),
         Some(&exposed),
     );
-    assert!(!decision.is_granted());
-    assert!(matches!(decision, PolicyDecision::DeniedByExposure { .. }));
+    assert!(matches!(result, Err(EngineError::ExposureBlocked { .. })));
+
+    // A target the exposure does not block still mints.
+    engine
+        .mint_capability(
+            &ObjectId::new("agent:openclaw"),
+            &ObjectId::new("tool:file-read"),
+            &Operation::new("invoke"),
+            Some(&exposed),
+        )
+        .expect("file-read is not blocked by PII:SSN exposure");
 }
 
 // =========================================================================

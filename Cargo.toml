@@ -32,3 +32,14 @@ toml = "0.8"
 glob-match = "0.2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
+
+# Local development against the in-tree hessra-tokens workspace. Redirects the
+# published token crates to their local paths so changes (e.g. the context
+# token's compound reject support) are picked up without a publish, and so a
+# single hessra-token-core is shared across all of them. Remove once the
+# corresponding token crate versions are published.
+[patch.crates-io]
+hessra-token-core = { path = "../hessra-tokens/hessra-token-core" }
+hessra-cap-token = { path = "../hessra-tokens/hessra-cap-token" }
+hessra-identity-token = { path = "../hessra-tokens/hessra-identity-token" }
+hessra-context-token = { path = "../hessra-tokens/hessra-context-token" }

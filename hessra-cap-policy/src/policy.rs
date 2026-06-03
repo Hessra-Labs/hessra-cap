@@ -106,55 +106,19 @@ impl CListPolicy {
         }
     }
 
-    /// Check if any exposure rule blocks access to a target given the current exposure labels.
-    fn check_exposure_restrictions(
-        &self,
-        target: &str,
-        exposure_labels: &[ExposureLabel],
-    ) -> Option<(ExposureLabel, ObjectId)> {
-        if exposure_labels.is_empty() {
-            return None;
-        }
-
-        for rule in &self.exposure_rules {
-            let rule_matches = if rule.r#match == "all" {
-                // All label patterns must match at least one exposure label
-                rule.labels.iter().all(|pattern| {
-                    exposure_labels
-                        .iter()
-                        .any(|label| matches_pattern(pattern, label.as_str()))
-                })
-            } else {
-                // Any label pattern matches any exposure label
-                rule.labels.iter().any(|pattern| {
-                    exposure_labels
-                        .iter()
-                        .any(|label| matches_pattern(pattern, label.as_str()))
-                })
-            };
-
-            if rule_matches {
-                // Check if the target is in the blocked list
-                for blocked in &rule.blocks {
-                    if matches_pattern(blocked, target) {
-                        // Find the first matching exposure label for the error
-                        let matching_label = exposure_labels
-                            .iter()
-                            .find(|label| {
-                                rule.labels
-                                    .iter()
-                                    .any(|pattern| matches_pattern(pattern, label.as_str()))
-                            })
-                            .cloned()
-                            .unwrap_or_else(|| ExposureLabel::new("unknown"));
-
-                        return Some((matching_label, ObjectId::new(target)));
-                    }
+    /// The complete set of concrete exposure labels any data source can attest,
+    /// derived from the declared classifications. Compound reject rules are
+    /// expanded against this universe.
+    fn label_universe(&self) -> Vec<String> {
+        let mut universe: Vec<String> = Vec::new();
+        for labels in self.classifications.values() {
+            for label in labels {
+                if !universe.contains(label) {
+                    universe.push(label.clone());
                 }
             }
         }
-
-        None
+        universe
     }
 }
 
@@ -164,19 +128,10 @@ impl PolicyBackend for CListPolicy {
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
-        exposure_labels: &[ExposureLabel],
     ) -> PolicyDecision {
-        // Step 1: Check exposure restrictions first
-        if let Some((label, blocked_target)) =
-            self.check_exposure_restrictions(target.as_str(), exposure_labels)
-        {
-            return PolicyDecision::DeniedByExposure {
-                label,
-                blocked_target,
-            };
-        }
-
-        // Step 2: Check capability space
+        // Capability grant only. Exposure restrictions are enforced at mint
+        // time by the context token's reject rules (see `precluding_labels`
+        // and `compound_reject_rules`).
         let Some(object) = self.objects.get(subject.as_str()) else {
             return PolicyDecision::Denied {
                 reason: format!("object '{subject}' not found in policy"),
@@ -215,6 +170,106 @@ impl PolicyBackend for CListPolicy {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn precluding_labels(
+        &self,
+        target: &ObjectId,
+        attested: &[ExposureLabel],
+    ) -> Vec<ExposureLabel> {
+        let mut out: Vec<ExposureLabel> = Vec::new();
+        if attested.is_empty() {
+            return out;
+        }
+
+        let push_unique = |label: &ExposureLabel, out: &mut Vec<ExposureLabel>| {
+            if !out.contains(label) {
+                out.push(label.clone());
+            }
+        };
+
+        for rule in &self.exposure_rules {
+            // Only rules that block this target contribute candidate facts.
+            if !rule
+                .blocks
+                .iter()
+                .any(|blocked| matches_pattern(blocked, target.as_str()))
+            {
+                continue;
+            }
+
+            if rule.r#match == "all" {
+                // Conjunction: contribute the rule's matching attested labels
+                // only when every pattern is satisfied by some attested label.
+                // The token's compound reject enforces the AND; gating here
+                // keeps a single member from tripping a per-label reject meant
+                // for a different target.
+                let all_matched = rule.labels.iter().all(|pattern| {
+                    attested
+                        .iter()
+                        .any(|label| matches_pattern(pattern, label.as_str()))
+                });
+                if !all_matched {
+                    continue;
+                }
+            }
+
+            // "any" rules (and satisfied "all" rules) contribute every attested
+            // label that matches one of their patterns.
+            for label in attested {
+                let matches = rule
+                    .labels
+                    .iter()
+                    .any(|pattern| matches_pattern(pattern, label.as_str()));
+                if matches {
+                    push_unique(label, &mut out);
+                }
+            }
+        }
+
+        out
+    }
+
+    fn compound_reject_rules(&self) -> Vec<(ExposureLabel, ExposureLabel)> {
+        let universe = self.label_universe();
+        let expand = |pattern: &str| -> Vec<String> {
+            universe
+                .iter()
+                .filter(|label| matches_pattern(pattern, label))
+                .cloned()
+                .collect()
+        };
+
+        let mut pairs: Vec<(ExposureLabel, ExposureLabel)> = Vec::new();
+        for rule in &self.exposure_rules {
+            if rule.r#match != "all" {
+                continue;
+            }
+            if rule.labels.len() != 2 {
+                tracing::warn!(
+                    labels = ?rule.labels,
+                    "compound exposure rule has {} labels; only two-label compound \
+                     rules are enforced under reject-if, skipping",
+                    rule.labels.len()
+                );
+                continue;
+            }
+            for first in expand(&rule.labels[0]) {
+                for second in expand(&rule.labels[1]) {
+                    if first == second {
+                        continue;
+                    }
+                    let pair = (ExposureLabel::new(&first), ExposureLabel::new(&second));
+                    let dup = pairs.iter().any(|(a, b)| {
+                        (*a == pair.0 && *b == pair.1) || (*a == pair.1 && *b == pair.0)
+                    });
+                    if !dup {
+                        pairs.push(pair);
+                    }
+                }
+            }
+        }
+        pairs
     }
 
     fn list_grants(&self, subject: &ObjectId) -> Vec<CapabilityGrant> {
@@ -314,7 +369,6 @@ blocks = ["tool:*"]
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:file-read"),
             &Operation::new("invoke"),
-            &[],
         );
         assert!(decision.is_granted());
     }
@@ -326,7 +380,6 @@ blocks = ["tool:*"]
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:delete-everything"),
             &Operation::new("invoke"),
-            &[],
         );
         assert!(!decision.is_granted());
     }
@@ -338,7 +391,6 @@ blocks = ["tool:*"]
             &ObjectId::new("service:api-gateway"),
             &ObjectId::new("service:user-service"),
             &Operation::new("delete"),
-            &[],
         );
         assert!(!decision.is_granted());
     }
@@ -350,68 +402,57 @@ blocks = ["tool:*"]
             &ObjectId::new("agent:unknown"),
             &ObjectId::new("tool:file-read"),
             &Operation::new("invoke"),
-            &[],
         );
         assert!(!decision.is_granted());
     }
 
     #[test]
-    fn test_exposure_blocks_access() {
+    fn test_evaluate_ignores_exposure() {
+        // evaluate decides the grant only; exposure no longer factors in.
         let policy = test_policy();
-        let exposure = vec![ExposureLabel::new("PII:SSN")];
-
-        // web-search should be blocked
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:web-search"),
             &Operation::new("invoke"),
-            &exposure,
-        );
-        assert!(!decision.is_granted());
-        assert!(matches!(decision, PolicyDecision::DeniedByExposure { .. }));
-    }
-
-    #[test]
-    fn test_exposure_allows_non_blocked() {
-        let policy = test_policy();
-        let exposure = vec![ExposureLabel::new("PII:SSN")];
-
-        // file-read should still work with SSN exposure
-        let decision = policy.evaluate(
-            &ObjectId::new("agent:openclaw"),
-            &ObjectId::new("tool:file-read"),
-            &Operation::new("invoke"),
-            &exposure,
         );
         assert!(decision.is_granted());
     }
 
     #[test]
-    fn test_compound_exposure_rule() {
+    fn test_precluding_labels_single_label_rule() {
+        let policy = test_policy();
+        let attested = vec![ExposureLabel::new("PII:SSN")];
+
+        // tool:web-search is blocked by the single-label PII:SSN rule.
+        let precluding = policy.precluding_labels(&ObjectId::new("tool:web-search"), &attested);
+        assert_eq!(precluding, vec![ExposureLabel::new("PII:SSN")]);
+
+        // tool:file-read is not blocked by that rule -> nothing to assert.
+        let precluding = policy.precluding_labels(&ObjectId::new("tool:file-read"), &attested);
+        assert!(precluding.is_empty());
+    }
+
+    #[test]
+    fn test_precluding_labels_compound_rule_gating() {
         let policy = test_policy();
 
-        // PII alone shouldn't trigger the compound rule
+        // The compound rule (PII:* AND financial:*) blocks tool:*. A single
+        // member must not contribute candidate facts.
         let pii_only = vec![ExposureLabel::new("PII:email")];
-        let decision = policy.evaluate(
-            &ObjectId::new("agent:openclaw"),
-            &ObjectId::new("tool:file-read"),
-            &Operation::new("invoke"),
-            &pii_only,
+        let precluding = policy.precluding_labels(&ObjectId::new("tool:file-read"), &pii_only);
+        assert!(
+            precluding.is_empty(),
+            "a single compound member must not be asserted"
         );
-        assert!(decision.is_granted());
 
-        // PII + financial should trigger the compound rule blocking all tools
+        // Both members present -> contribute both matching attested labels.
         let both = vec![
             ExposureLabel::new("PII:email"),
             ExposureLabel::new("financial:balance"),
         ];
-        let decision = policy.evaluate(
-            &ObjectId::new("agent:openclaw"),
-            &ObjectId::new("tool:file-read"),
-            &Operation::new("invoke"),
-            &both,
-        );
-        assert!(!decision.is_granted());
+        let precluding = policy.precluding_labels(&ObjectId::new("tool:file-read"), &both);
+        assert!(precluding.contains(&ExposureLabel::new("PII:email")));
+        assert!(precluding.contains(&ExposureLabel::new("financial:balance")));
     }
 
     #[test]

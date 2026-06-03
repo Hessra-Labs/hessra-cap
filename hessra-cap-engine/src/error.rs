@@ -16,10 +16,17 @@ pub enum EngineError {
         reason: String,
     },
 
-    /// Capability request denied due to exposure restriction.
-    #[error("capability denied by exposure: label '{label}' blocks access to '{target}'")]
-    ExposureRestriction {
-        label: ExposureLabel,
+    /// Capability mint denied because the context token's `reject if
+    /// exposure(...)` rules fired when the engine asserted the candidate
+    /// exposure facts relevant to `target`. This is a context-token
+    /// verification failure, not a policy-backend decision: the accumulated
+    /// exposure in the session (`labels`) precludes issuing a capability for
+    /// `target`.
+    #[error(
+        "capability denied by exposure: accumulated exposure {labels:?} blocks access to '{target}'"
+    )]
+    ExposureBlocked {
+        labels: Vec<ExposureLabel>,
         target: ObjectId,
     },
 

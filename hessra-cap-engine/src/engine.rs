@@ -167,21 +167,17 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
 
     /// Evaluate whether a capability request would be granted, without minting.
     ///
-    /// Checks both the capability space (does the subject hold this capability?)
-    /// and exposure restrictions (would context exposure block this?).
+    /// This decides the capability grant only (does the subject hold this
+    /// capability?). Exposure enforcement is not part of this decision: it
+    /// happens at mint time via the context token's `reject if exposure(...)`
+    /// rules (see [`Self::mint_designated_capability`]).
     pub fn evaluate(
         &self,
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
-        context: Option<&ContextToken>,
     ) -> PolicyDecision {
-        let exposure_labels: Vec<ExposureLabel> = context
-            .map(|c| c.exposure_labels().to_vec())
-            .unwrap_or_default();
-
-        self.policy
-            .evaluate(subject, target, operation, &exposure_labels)
+        self.policy.evaluate(subject, target, operation)
     }
 
     // =========================================================================
@@ -415,8 +411,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         context: Option<&ContextToken>,
         options: MintOptions,
     ) -> Result<MintResult, EngineError> {
-        // Step 1: Evaluate policy.
-        let decision = self.evaluate(subject, target, operation, context);
+        // Step 1: Evaluate policy (capability grant only).
+        let decision = self.evaluate(subject, target, operation);
         let (policy_anchor, static_designations) = match decision {
             PolicyDecision::Granted {
                 anchor,
@@ -430,16 +426,20 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
                     reason,
                 });
             }
-            PolicyDecision::DeniedByExposure {
-                label,
-                blocked_target,
-            } => {
-                return Err(EngineError::ExposureRestriction {
-                    label,
-                    target: blocked_target,
-                });
-            }
         };
+
+        // Step 1b: Exposure enforcement via the context token. The policy
+        // backend names which candidate exposure facts are relevant to
+        // `target` given what the session has already been exposed to; the
+        // context token's `reject if exposure(...)` rules make the actual
+        // block decision. This is the single exposure-enforcement mechanism.
+        if let Some(ctx) = context {
+            let attested = context::extract_exposure_labels(ctx.token(), self.keypair.public())?;
+            let precluding = self.policy.precluding_labels(target, &attested);
+            if !precluding.is_empty() {
+                context::verify_excluding(ctx.token(), self.keypair.public(), &precluding, target)?;
+            }
+        }
 
         // Step 2: Compute the union of designations attached at mint.
         let mut combined: Vec<Designation> =
@@ -777,12 +777,19 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     // =========================================================================
 
     /// Mint a fresh context token for a subject (new session, no exposure).
+    ///
+    /// Any two-label compound reject rules the policy declares
+    /// ([`PolicyBackend::compound_reject_rules`]) are seeded into the token's
+    /// authority block so that conjunction (`AND`) exposure restrictions are
+    /// carried by the token itself.
     pub fn mint_context(
         &self,
         subject: &ObjectId,
         session_config: SessionConfig,
     ) -> Result<ContextToken, EngineError> {
-        HessraContext::new(subject.clone(), session_config).issue(&self.keypair)
+        HessraContext::new(subject.clone(), session_config)
+            .with_compound_rejects(self.policy.compound_reject_rules())
+            .issue(&self.keypair)
     }
 
     /// Add exposure to a context token from a specific data source.

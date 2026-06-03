@@ -215,6 +215,12 @@ impl Default for SessionConfig {
 }
 
 /// Result of a policy evaluation.
+///
+/// Policy evaluation decides capability grants only. Exposure restrictions are
+/// no longer a policy decision: they are enforced at mint time by the context
+/// token's `reject if exposure(...)` rules (see
+/// [`PolicyBackend::precluding_labels`] for the engine's gather step). There is
+/// therefore no `DeniedByExposure` variant.
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {
     /// The capability request is granted. `anchor` carries the resolved anchor
@@ -231,11 +237,6 @@ pub enum PolicyDecision {
     },
     /// The capability request is denied by policy (object doesn't hold this capability).
     Denied { reason: String },
-    /// The capability request is denied due to exposure restrictions.
-    DeniedByExposure {
-        label: ExposureLabel,
-        blocked_target: ObjectId,
-    },
 }
 
 impl PolicyDecision {
@@ -249,14 +250,17 @@ impl PolicyDecision {
 /// Implementations evaluate capability requests against their policy model.
 /// The default implementation is the CList backend in `hessra-cap-policy`.
 pub trait PolicyBackend: Send + Sync {
-    /// Evaluate whether a subject can access a target with the given operation,
-    /// considering any exposure labels from the subject's context.
+    /// Evaluate whether a subject can access a target with the given operation.
+    ///
+    /// This decides capability grants only. Exposure restrictions are enforced
+    /// separately at mint time by the context token's `reject if exposure(...)`
+    /// rules; the backend contributes the gather data via
+    /// [`Self::precluding_labels`] but does not make the block decision here.
     fn evaluate(
         &self,
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
-        exposure_labels: &[ExposureLabel],
     ) -> PolicyDecision;
 
     /// Get the data classification (exposure labels) for a target.
@@ -264,6 +268,40 @@ pub trait PolicyBackend: Send + Sync {
     /// When the engine mints a capability for a classified target, these labels
     /// are automatically added to the subject's context token.
     fn classification(&self, target: &ObjectId) -> Vec<ExposureLabel>;
+
+    /// The exposure labels the engine should assert as candidate
+    /// `exposure({label})` facts when minting a capability for `target`, given
+    /// the labels already attested in the subject's context (`attested`).
+    ///
+    /// This is the engine's "gather" step: it decides *which* candidate facts
+    /// to test against the context token's `reject if exposure(...)` rules. The
+    /// token's reject rules make the actual block decision. The returned set
+    /// must be conjunction-aware: for a compound (`match = "all"`) rule that
+    /// blocks `target`, include the rule's labels only when every one of them
+    /// is present in `attested`, so a single member does not trip the token's
+    /// per-label reject for a different target. Single-label (`match = "any"`)
+    /// rules contribute their matching attested labels directly.
+    ///
+    /// The default returns an empty vector, modeling a backend with no exposure
+    /// restrictions.
+    fn precluding_labels(
+        &self,
+        _target: &ObjectId,
+        _attested: &[ExposureLabel],
+    ) -> Vec<ExposureLabel> {
+        Vec::new()
+    }
+
+    /// The set of two-label compound reject rules the engine should seed into a
+    /// freshly minted context token, as concrete label pairs. Each pair becomes
+    /// a `reject if exposure(a), exposure(b)` rule that fires only when both
+    /// labels are asserted together. Patterns in policy are expanded to
+    /// concrete labels by the backend before being returned here.
+    ///
+    /// The default returns an empty vector (no compound rules).
+    fn compound_reject_rules(&self) -> Vec<(ExposureLabel, ExposureLabel)> {
+        Vec::new()
+    }
 
     /// List all capability grants for a subject (for introspection and audit).
     fn list_grants(&self, subject: &ObjectId) -> Vec<CapabilityGrant>;
