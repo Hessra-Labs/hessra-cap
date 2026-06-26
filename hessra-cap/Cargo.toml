@@ -15,6 +15,12 @@ hessra-cap-engine = { workspace = true }
 hessra-cap-policy = { workspace = true }
 hessra-cap-schema = { workspace = true }
 
+[lints.clippy]
+# EngineError is a rich, structured error type; the engine crate deliberately
+# accepts the slightly larger Result rather than boxing every variant (see
+# hessra-cap-engine/src/lib.rs). Mirror that stance for this crate's examples.
+result_large_err = "allow"
+
 [dev-dependencies]
 hessra-cap-token = { workspace = true }
 hessra-identity-token = { workspace = true }

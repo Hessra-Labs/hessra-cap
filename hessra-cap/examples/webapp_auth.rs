@@ -24,7 +24,7 @@
 //! Run with: `cargo run --example webapp_auth -p hessra-cap`
 
 use hessra_cap::{CListPolicy, CapabilityEngine, Designation, IdentityConfig, ObjectId, Operation};
-use hessra_cap_token::DesignationBuilder;
+use hessra_cap_token::HessraCapability;
 use hessra_identity_token::{add_identity_attenuation_to_token, inspect_identity_token};
 use hessra_token_core::TokenTimeConfig;
 
@@ -202,10 +202,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Both tenant and user designations are required -- this binds the capability
     // to a specific user at a specific tenant. The user identity comes from the
     // verified delegated identity token.
-    let user_token = DesignationBuilder::from_base64(broad_token, root_public_key)?
-        .designate("tenant_id".into(), "acme-corp".into())
-        .designate("user".into(), user_subject.into())
-        .attenuate_base64()?;
+    let user_token = HessraCapability::amend(&broad_token, root_public_key)?
+        .designation("tenant_id", "acme-corp")
+        .designation("user", user_subject)
+        .attenuate()?;
     println!("Webapp narrowed root token for {user_subject} at tenant acme-corp");
 
     // The API layer verifies using both designations.

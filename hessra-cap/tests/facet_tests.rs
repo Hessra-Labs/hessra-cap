@@ -28,7 +28,7 @@ fn engine_without_facets_behaves_unchanged() {
     // Default engine: facets disabled, mint and verify behave as before.
     let engine = CapabilityEngine::with_generated_keys(jake_can_invoke_web_search());
     assert!(!engine.facets_enabled());
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 
     let result = engine
         .mint_capability(
@@ -40,7 +40,7 @@ fn engine_without_facets_behaves_unchanged() {
         .expect("mint");
 
     // The map stays empty because facets are off.
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 
     // Both verify methods work without supplying a facet designation.
     engine
@@ -82,7 +82,7 @@ fn enabling_facets_attaches_designation_on_every_mint() {
         .expect("mint 2");
 
     // Each mint registered a fresh facet.
-    assert_eq!(engine.facet_map().len(), 2);
+    assert_eq!(engine.facet_ledger().len(), 2);
 
     // Tokens differ; the facet designation is unique per mint.
     assert_ne!(r1.token, r2.token);
@@ -100,7 +100,7 @@ fn non_consuming_verify_auto_supplies_facet_and_succeeds_repeatedly() {
             None,
         )
         .expect("mint");
-    assert_eq!(engine.facet_map().len(), 1);
+    assert_eq!(engine.facet_ledger().len(), 1);
 
     // Multiple non-consuming verifies all succeed; entry stays in the map.
     for _ in 0..3 {
@@ -112,7 +112,7 @@ fn non_consuming_verify_auto_supplies_facet_and_succeeds_repeatedly() {
             )
             .expect("non-consuming verify");
     }
-    assert_eq!(engine.facet_map().len(), 1);
+    assert_eq!(engine.facet_ledger().len(), 1);
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn verify_and_consume_removes_entry_and_blocks_second_use() {
             None,
         )
         .expect("mint");
-    assert_eq!(engine.facet_map().len(), 1);
+    assert_eq!(engine.facet_ledger().len(), 1);
 
     engine
         .verify_and_consume_capability(
@@ -136,7 +136,7 @@ fn verify_and_consume_removes_entry_and_blocks_second_use() {
             &Operation::new("invoke"),
         )
         .expect("first use ok");
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 
     // The cap still embeds a facet check, but the matching fact is no longer
     // in the map, so the engine can't supply it. Verification fails closed.
@@ -198,7 +198,7 @@ capabilities = [
 
     // The failed attempt above looked up the facet but the verifier didn't
     // acknowledge success, so the entry is still in the map (until-ack).
-    assert_eq!(engine.facet_map().len(), 1);
+    assert_eq!(engine.facet_ledger().len(), 1);
 
     // Now supply the anchor; verifier acknowledges, facet is consumed.
     engine
@@ -213,7 +213,7 @@ capabilities = [
         )
         .expect("anchor + auto-supplied facet succeeds");
 
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn fresh_engine_does_not_honor_caps_minted_by_a_different_engine() {
             None,
         )
         .expect("mint");
-    assert_eq!(engine_a.facet_map().len(), 1);
+    assert_eq!(engine_a.facet_ledger().len(), 1);
 
     // A second engine with the same policy + facets enabled but a fresh
     // (different) keypair is the cleanest model of restart for this test:
@@ -250,7 +250,7 @@ fn fresh_engine_does_not_honor_caps_minted_by_a_different_engine() {
             &Operation::new("invoke"),
         )
         .expect("first consume");
-    assert!(engine_a.facet_map().is_empty());
+    assert!(engine_a.facet_ledger().is_empty());
 
     // Now the same token is no longer honored: the facet map has no entry,
     // so the engine cannot supply the matching fact.
@@ -293,7 +293,7 @@ fn concurrent_verify_and_consume_admits_exactly_one_success() {
             None,
         )
         .expect("mint");
-    assert_eq!(engine.facet_map().len(), 1);
+    assert_eq!(engine.facet_ledger().len(), 1);
 
     let token = Arc::new(result.token);
     let successes = Arc::new(AtomicUsize::new(0));
@@ -330,7 +330,7 @@ fn concurrent_verify_and_consume_admits_exactly_one_success() {
         "exactly one consume should win the race",
     );
     assert_eq!(failures.load(Ordering::SeqCst), 15);
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn issue_capability_attaches_facet_when_enabled() {
 
     // The facet map grew by one and the token now requires the auto-supplied
     // facet at verify time.
-    assert_eq!(engine.facet_map().len(), 1);
+    assert_eq!(engine.facet_ledger().len(), 1);
 
     // Non-consuming verify works: engine auto-supplies the facet.
     engine
@@ -363,7 +363,7 @@ fn issue_capability_attaches_facet_when_enabled() {
     engine
         .verify_and_consume_capability(&token, &ObjectId::new("api:posts"), &Operation::new("read"))
         .expect("first consume succeeds");
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 
     let second = engine.verify_and_consume_capability(
         &token,
@@ -389,7 +389,7 @@ fn issue_capability_with_facets_disabled_is_unchanged() {
             MintOptions::default(),
         )
         .expect("issue");
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
     engine
         .verify_capability(&token, &ObjectId::new("api:posts"), &Operation::new("read"))
         .expect("verify of plain issued cap");
@@ -409,18 +409,17 @@ fn facets_enabled_engine_still_honors_non_faceted_tokens() {
     // CapabilityEngine. The engine's signature checks pass, the map is
     // empty, and verification succeeds because there's nothing to satisfy.
     let keypair = KeyPair::new();
-    let non_faceted_token = HessraCapability::new(
-        "agent:jake".to_string(),
-        "tool:web-search".to_string(),
-        "invoke".to_string(),
-        TokenTimeConfig::default(),
-    )
-    .issue(&keypair)
-    .expect("raw mint of a non-faceted token");
+    let non_faceted_token = HessraCapability::new()
+        .subject("agent:jake")
+        .resource("tool:web-search")
+        .operation("invoke")
+        .with_time(TokenTimeConfig::default())
+        .issue(&keypair)
+        .expect("raw mint of a non-faceted token");
 
     let engine = CapabilityEngine::new(jake_can_invoke_web_search(), keypair).with_facets();
     assert!(engine.facets_enabled());
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 
     engine
         .verify_capability(
@@ -431,7 +430,7 @@ fn facets_enabled_engine_still_honors_non_faceted_tokens() {
         .expect("non-faceted token verifies on a facets-enabled engine with an empty map");
 
     // The verify did not register or mutate anything; the map stayed empty.
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 
     // Consuming verify also succeeds — there's nothing to consume but the
     // verifier still acknowledges, since no facet check is embedded.
@@ -442,5 +441,5 @@ fn facets_enabled_engine_still_honors_non_faceted_tokens() {
             &Operation::new("invoke"),
         )
         .expect("consume path on a non-faceted token is a no-op for the map");
-    assert!(engine.facet_map().is_empty());
+    assert!(engine.facet_ledger().is_empty());
 }

@@ -1,15 +1,13 @@
 //! The capability engine: orchestrates policy evaluation, token minting, and verification.
 
 use hessra_cap_schema::{RESERVED_LABELS, SchemaRegistry};
-use hessra_cap_token::{
-    CapabilityVerifier, DesignationBuilder, HessraCapability, get_capability_revocation_id,
-};
+use hessra_cap_token::{CapabilityVerifier, HessraCapability};
 use hessra_identity_token::{HessraIdentity, IdentityVerifier};
 use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
 
 use crate::context::{self, ContextToken, HessraContext};
 use crate::error::EngineError;
-use crate::facet::{FACET_LABEL, FacetMap, generate_facet_uuid};
+use crate::mechanism::{self, FACET_LABEL, FacetLedger};
 use crate::resolver::{DesignationContext, DesignationResolver, NoopResolver};
 use crate::types::{
     CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
@@ -34,7 +32,7 @@ pub struct CapabilityEngine<P: PolicyBackend> {
     resolver: Box<dyn DesignationResolver>,
     keypair: KeyPair,
     facets_enabled: bool,
-    facet_map: FacetMap,
+    facet_ledger: FacetLedger,
 }
 
 impl<P: PolicyBackend> CapabilityEngine<P> {
@@ -48,7 +46,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             resolver: Box::new(NoopResolver),
             keypair,
             facets_enabled: false,
-            facet_map: FacetMap::new(),
+            facet_ledger: FacetLedger::new(),
         }
     }
 
@@ -64,7 +62,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             resolver: Box::new(NoopResolver),
             keypair: KeyPair::new(),
             facets_enabled: false,
-            facet_map: FacetMap::new(),
+            facet_ledger: FacetLedger::new(),
         }
     }
 
@@ -96,7 +94,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     /// Enable forwarding facets on this engine. Once enabled, every minted
     /// capability gets a fresh `designation("facet", <uuid>)` attached and
     /// the engine records `(authority-block revocation id, facet uuid)` in
-    /// its in-memory [`FacetMap`].
+    /// its in-memory [`FacetLedger`] (verifier-facet convention).
     ///
     /// The non-consuming verify path
     /// ([`Self::verify_capability`] / [`Self::verify_designated_capability`])
@@ -135,10 +133,10 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         self
     }
 
-    /// A handle to the facet map. The map is shared by clone, so the returned
-    /// handle observes the same state as the engine.
-    pub fn facet_map(&self) -> FacetMap {
-        self.facet_map.clone()
+    /// A handle to the facet ledger. The ledger is shared by clone, so the
+    /// returned handle observes the same state as the engine.
+    pub fn facet_ledger(&self) -> FacetLedger {
+        self.facet_ledger.clone()
     }
 
     /// Whether forwarding facets are enabled on this engine.
@@ -314,15 +312,14 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         options: MintOptions,
     ) -> Result<String, EngineError> {
         let time_config = options.time_config.unwrap_or_default();
-        let mut builder = HessraCapability::new(
-            subject.as_str().to_string(),
-            target.as_str().to_string(),
-            operation.as_str().to_string(),
-            time_config,
-        );
+        let mut builder = HessraCapability::new()
+            .subject(subject.as_str())
+            .resource(target.as_str())
+            .operation(operation.as_str())
+            .with_time(time_config);
 
         if let Some(anchor) = options.anchor {
-            builder = builder.anchor_bound(anchor.as_str().to_string());
+            builder = builder.anchor(anchor.as_str());
         }
 
         let mut token = builder
@@ -332,11 +329,10 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         // Engine-level invariant: facets attach to every cap when enabled,
         // regardless of which mint path produced the cap.
         if self.facets_enabled {
-            let rev_id = get_capability_revocation_id(token.clone(), self.keypair.public())
-                .map_err(EngineError::Token)?
-                .to_hex();
-            let facet_uuid = generate_facet_uuid();
-            self.facet_map.register(rev_id, facet_uuid.clone());
+            let rev_id = mechanism::verifier_facet_key(&token, self.keypair.public())?;
+            let facet_uuid = self.facet_ledger.issue_facet();
+            self.facet_ledger
+                .register_verifier(rev_id, facet_uuid.clone());
             token = self.attenuate_with_designations(
                 &token,
                 &[Designation {
@@ -362,14 +358,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         token: &str,
         designations: &[Designation],
     ) -> Result<String, EngineError> {
-        let mut builder = DesignationBuilder::from_base64(token.to_string(), self.keypair.public())
-            .map_err(EngineError::Token)?;
-
-        for d in designations {
-            builder = builder.designate(d.label.clone(), d.value.clone());
-        }
-
-        builder.attenuate_base64().map_err(EngineError::Token)
+        mechanism::attenuate(token, self.keypair.public(), designations)
     }
 
     /// Mint a capability with caller-supplied designations attached.
@@ -479,15 +468,14 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
 
         // Step 5: Build and issue. Caller's options.anchor overrides policy's.
         let time_config = options.time_config.unwrap_or_default();
-        let mut builder = HessraCapability::new(
-            subject.as_str().to_string(),
-            target.as_str().to_string(),
-            operation.as_str().to_string(),
-            time_config,
-        );
+        let mut builder = HessraCapability::new()
+            .subject(subject.as_str())
+            .resource(target.as_str())
+            .operation(operation.as_str())
+            .with_time(time_config);
         let resolved_anchor = options.anchor.or(policy_anchor);
         if let Some(anchor) = resolved_anchor {
-            builder = builder.anchor_bound(anchor.as_str().to_string());
+            builder = builder.anchor(anchor.as_str());
         }
         let mut token = builder
             .issue(&self.keypair)
@@ -502,11 +490,10 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         // designation and register it in the engine's facet map keyed by the
         // authority-block revocation id.
         if self.facets_enabled {
-            let rev_id = get_capability_revocation_id(token.clone(), self.keypair.public())
-                .map_err(EngineError::Token)?
-                .to_hex();
-            let facet_uuid = generate_facet_uuid();
-            self.facet_map.register(rev_id, facet_uuid.clone());
+            let rev_id = mechanism::verifier_facet_key(&token, self.keypair.public())?;
+            let facet_uuid = self.facet_ledger.issue_facet();
+            self.facet_ledger
+                .register_verifier(rev_id, facet_uuid.clone());
             token = self.attenuate_with_designations(
                 &token,
                 &[Designation {
@@ -693,10 +680,8 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         }
 
         // Facets are enabled. Extract the cap's authority-block revocation id
-        // so the facet map can be consulted.
-        let rev_id = get_capability_revocation_id(token.to_string(), self.keypair.public())
-            .map_err(EngineError::Token)?
-            .to_hex();
+        // so the facet ledger can be consulted.
+        let rev_id = mechanism::verifier_facet_key(token, self.keypair.public())?;
 
         if consume {
             // Consume path: lookup + verify + remove must be one critical
@@ -705,15 +690,16 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
             // on Ok return, the helper removes the entry atomically. On Err,
             // the entry is left in place to support retry with corrected
             // inputs.
-            self.facet_map.verify_and_consume_atomic(&rev_id, |facet| {
-                build_verifier(facet).verify().map_err(EngineError::Token)
-            })
+            self.facet_ledger
+                .verify_and_consume_verifier(&rev_id, |facet| {
+                    build_verifier(facet).verify().map_err(EngineError::Token)
+                })
         } else {
             // Non-consume path: a stale read is harmless since nothing is
             // removed. If the entry vanishes between lookup and verify
             // (because a concurrent consume succeeded), verification will
             // fail closed and the caller can retry.
-            let facet = self.facet_map.lookup(&rev_id);
+            let facet = self.facet_ledger.lookup_verifier(&rev_id);
             build_verifier(facet.as_deref())
                 .verify()
                 .map_err(EngineError::Token)
