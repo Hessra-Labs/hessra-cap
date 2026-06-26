@@ -177,7 +177,7 @@ pub struct MintOptions {
 }
 
 /// A designation label-value pair for narrowing capability scope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Designation {
     pub label: String,
     pub value: String,
