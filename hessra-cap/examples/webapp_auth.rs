@@ -298,9 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Summary ---");
     println!("Root engine:  broad service-level capabilities (api:users, api:orders, api:admin)");
     println!("Webapp engine: user-level policy as defense in depth");
-    println!(
-        "Cross-engine: amendment narrows root tokens per-user (no signing key needed)"
-    );
+    println!("Cross-engine: amendment narrows root tokens per-user (no signing key needed)");
     println!("Guarantee:    capabilities only narrow, never expand");
 
     Ok(())
