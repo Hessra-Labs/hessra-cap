@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-cap-token"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
  "biscuit-auth",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-context-token"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "biscuit-auth",
  "chrono",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-identity-token"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
  "biscuit-auth",
@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "hessra-token-core"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
  "biscuit-auth",

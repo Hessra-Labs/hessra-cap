@@ -12,7 +12,7 @@
 //!
 //! The key pattern shown here is **cross-engine delegation**: the root issues a broad
 //! capability token to the webapp service, and the webapp narrows it per-user using
-//! `DesignationBuilder` -- which requires only the root's public key, not its signing
+//! `HessraCapability::amend` -- which requires only the root's public key, not its signing
 //! key. This is a fundamental property of Biscuit tokens: attenuation (adding checks
 //! that narrow scope) never requires the authority's private key.
 //!
@@ -182,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 4: Cross-engine delegation with user designation (the key pattern)
     // =========================================================================
 
-    println!("\n--- Step 4: Cross-engine delegation via DesignationBuilder ---");
+    println!("\n--- Step 4: Cross-engine delegation via HessraCapability::amend ---");
 
     // Root issues a broad capability for the webapp service.
     let broad_token = root_engine
@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .token;
 
     // The webapp receives the broad token and narrows it for a specific user.
-    // DesignationBuilder only needs the root's PUBLIC key (no signing key).
+    // Amendment only needs the root's PUBLIC key (no signing key).
     // Biscuit attenuation blocks are unsigned -- they add checks that restrict
     // scope but can never expand it.
     //
@@ -299,7 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Root engine:  broad service-level capabilities (api:users, api:orders, api:admin)");
     println!("Webapp engine: user-level policy as defense in depth");
     println!(
-        "Cross-engine: DesignationBuilder narrows root tokens per-user (no signing key needed)"
+        "Cross-engine: amendment narrows root tokens per-user (no signing key needed)"
     );
     println!("Guarantee:    capabilities only narrow, never expand");
 

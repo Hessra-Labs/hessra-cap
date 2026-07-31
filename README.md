@@ -64,12 +64,12 @@ engine.verify_capability(
 
 ## Capability composition and designation
 
-The engine supports cross-object delegation using `DesignationBuilder`, which lets a
-service narrow a capability token for a specific user or tenant without access to the
-signing key. Just the public key is needed.
+The engine supports cross-object delegation using `HessraCapability::amend`, which
+lets a service narrow a capability token for a specific user or tenant without access
+to the signing key. Just the public key is needed.
 
 ```rust
-use hessra_cap_token::DesignationBuilder;
+use hessra_cap_token::HessraCapability;
 
 // Root issues a broad capability to the webapp service
 let service_token = root_engine.mint_capability(
@@ -81,10 +81,10 @@ let service_token = root_engine.mint_capability(
 
 // Webapp narrows it for a specific user at a specific tenant
 // No signing key required. Attenuation only adds checks, never removes them
-let user_token = DesignationBuilder::from_base64(service_token, root_public_key)?
-    .designate("tenant_id".into(), "acme-corp".into())
-    .designate("user".into(), "service:webapp:acme-corp:alice".into())
-    .attenuate_base64()?;
+let user_token = HessraCapability::amend(&service_token, root_public_key)?
+    .designation("tenant_id", "acme-corp")
+    .designation("user", "service:webapp:acme-corp:alice")
+    .attenuate()?;
 
 // Verifier confirms both designations. This fails closed if either is missing or wrong
 root_engine.verify_designated_capability(
