@@ -9,11 +9,6 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
-# for local development
-# hessra-token-core = { version = "2.0", path = "../hessra-tokens/hessra-token-core" }
-# hessra-cap-token = { version = "2.0", path = "../hessra-tokens/hessra-cap-token" }
-# hessra-identity-token = { version = "2.0", path = "../hessra-tokens/hessra-identity-token" }
-# hessra-context-token = { version = "2.0", path = "../hessra-tokens/hessra-context-token" }
 hessra-token-core = { version = "2.0" }
 hessra-cap-token = { version = "2.0" }
 hessra-identity-token = { version = "2.0" }
@@ -33,13 +28,14 @@ glob-match = "0.2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
-# Local development against the in-tree hessra-tokens workspace. Redirects the
-# published token crates to their local paths so changes (e.g. the context
-# token's compound reject support) are picked up without a publish, and so a
-# single hessra-token-core is shared across all of them. Remove once the
-# corresponding token crate versions are published.
-[patch.crates-io]
-hessra-token-core = { path = "../hessra-tokens/hessra-token-core" }
-hessra-cap-token = { path = "../hessra-tokens/hessra-cap-token" }
-hessra-identity-token = { path = "../hessra-tokens/hessra-identity-token" }
-hessra-context-token = { path = "../hessra-tokens/hessra-context-token" }
+# Co-developing against the in-tree hessra-tokens workspace? Uncomment this
+# block to redirect the published token crates to their local paths (unpublished
+# changes picked up, one shared hessra-token-core across all of them). Do NOT
+# commit it uncommented: the sibling path does not exist in CI, and cargo fails
+# resolution outright on a missing patch source. Re-comment (and republish the
+# token crates) before pushing.
+# [patch.crates-io]
+# hessra-token-core = { path = "../hessra-tokens/hessra-token-core" }
+# hessra-cap-token = { path = "../hessra-tokens/hessra-cap-token" }
+# hessra-identity-token = { path = "../hessra-tokens/hessra-identity-token" }
+# hessra-context-token = { path = "../hessra-tokens/hessra-context-token" }
