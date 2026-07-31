@@ -18,7 +18,7 @@
 //!
 //! Note: in capability security, all entities are objects. In this example, the webapp
 //! is an object, the users are objects, and the resources are objects. Objects can be
-//! granted capabilities to other objects so the term "user" is used to refer to an object
+//! issued capabilities to other objects so the term "user" is used to refer to an object
 //! attempting access and "resource" is an object that is being accessed.
 //!
 //! Run with: `cargo run --example webapp_auth -p hessra-cap`
@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Webapp engine -- knows about users and their role-based access.
     // Note: alice can only read users and orders. bob can read+write users.
-    // Neither has access to api:admin, even though the root grants that to
+    // Neither has access to api:admin, even though the root authorizes that for
     // the webapp service (principle of least authority).
     let webapp_policy = CListPolicy::from_toml(
         r#"
@@ -255,15 +255,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Step 5: Webapp-level authorization (defense in depth) ---");
 
     // The webapp's own policy provides an independent authorization layer.
-    // Even though the root grants service:webapp write access to api:users,
-    // the webapp's policy only grants alice read access.
+    // Even though the root authorizes service:webapp write access to api:users,
+    // the webapp's policy only authorizes alice read access.
 
     let alice_read = webapp_engine.evaluate(
         &ObjectId::new("user:alice"),
         &ObjectId::new("api:users"),
         &Operation::new("read"),
     );
-    assert!(alice_read.is_granted());
+    assert!(alice_read.is_authorized());
     println!("Webapp policy: alice CAN read api:users");
 
     let alice_write = webapp_engine.evaluate(
@@ -271,7 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("api:users"),
         &Operation::new("write"),
     );
-    assert!(!alice_write.is_granted());
+    assert!(!alice_write.is_authorized());
     println!("Webapp policy: alice CANNOT write api:users (restricted by webapp policy)");
 
     // Bob has different permissions.
@@ -280,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("api:users"),
         &Operation::new("write"),
     );
-    assert!(bob_write.is_granted());
+    assert!(bob_write.is_authorized());
     println!("Webapp policy: bob CAN write api:users");
 
     let bob_orders = webapp_engine.evaluate(
@@ -288,8 +288,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ObjectId::new("api:orders"),
         &Operation::new("read"),
     );
-    assert!(!bob_orders.is_granted());
-    println!("Webapp policy: bob CANNOT read api:orders (not in bob's grants)\n");
+    assert!(!bob_orders.is_authorized());
+    println!("Webapp policy: bob CANNOT read api:orders (not in bob's capabilities)\n");
 
     // =========================================================================
     // Summary

@@ -57,7 +57,7 @@ impl<'e> AgentHarness<'e> {
 
     /// Request a capability to invoke a tool.
     ///
-    /// Returns the capability token if granted. The harness automatically
+    /// Returns the capability token if authorized. The harness automatically
     /// updates its internal context with any exposure from the tool's data
     /// classification.
     fn request_tool(&mut self, tool: &ObjectId) -> Result<String, EngineError> {
@@ -93,7 +93,7 @@ impl<'e> AgentHarness<'e> {
     fn can_invoke(&self, tool: &ObjectId) -> bool {
         self.engine
             .evaluate(&self.agent_id, tool, &Operation::new("invoke"))
-            .is_granted()
+            .is_authorized()
     }
 
     /// Get the current exposure labels on this session.
@@ -327,11 +327,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
 
     println!("--- Phase 6: Introspection ---");
-    let grants = engine.list_grants(&ObjectId::new("agent:assistant"));
-    println!("Agent capability space ({} grants):", grants.len());
-    for grant in &grants {
-        let ops: Vec<&str> = grant.operations.iter().map(|o| o.as_str()).collect();
-        println!("  {} -> [{}]", grant.target, ops.join(", "));
+    let caps = engine.list_capabilities(&ObjectId::new("agent:assistant"));
+    println!("Agent capability space ({} capabilities):", caps.len());
+    for cap in &caps {
+        let ops: Vec<&str> = cap.operations.iter().map(|o| o.as_str()).collect();
+        println!("  {} -> [{}]", cap.target, ops.join(", "));
     }
     println!(
         "Can delegate: {}",

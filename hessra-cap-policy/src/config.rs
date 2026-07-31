@@ -65,7 +65,7 @@ pub struct ObjectConfig {
     #[serde(default)]
     pub identity: Option<IdentityConfigEntry>,
 
-    /// The object's capability grants.
+    /// The object's capabilities.
     #[serde(default)]
     pub capabilities: Vec<CapabilityConfig>,
 

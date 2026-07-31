@@ -109,16 +109,22 @@ pub fn attenuate(
 /// returned cap is activated but **facet-incomplete** -- still unverifiable until
 /// [`complete_facet`] supplies the facet fact. The facet pin is bound to this
 /// activation block, so a facet from another activation cannot satisfy it.
+///
+/// `time_config` controls "now" for the activation's expiry deadline: pass
+/// `TokenTimeConfig::default()` for the real wall clock, or a fixed `start_time`
+/// to make the ≤`valid_for` shortening deterministically testable.
 pub fn activate(
     token: &str,
     root_pk: PublicKey,
     activator: &KeyPair,
     valid_for: Duration,
     facet_id: &str,
+    time_config: TokenTimeConfig,
 ) -> Result<String, EngineError> {
     HessraCapability::amend(token, root_pk)?
         .activate()
         .valid_for(valid_for)
+        .with_time(time_config)
         .designation_trusting(activator.public(), FACET_LABEL, facet_id)
         .attest(activator)
         .map_err(EngineError::from)
@@ -143,6 +149,10 @@ pub fn complete_facet(
 /// the verifier's own designations. The tool-side check: the cap verifies iff
 /// its activation/facet checks are satisfied and its anchor matches this
 /// verifier's identity.
+///
+/// `time_config` controls the "now" checked against the cap's expiry: pass
+/// `TokenTimeConfig::default()` for the real wall clock, or a fixed `start_time`
+/// to verify at an advanced time (the seam for deterministic expiry tests).
 pub fn verify_at_anchor(
     token: &str,
     authority_pk: PublicKey,
@@ -150,6 +160,7 @@ pub fn verify_at_anchor(
     operation: &str,
     anchor: &str,
     designations: &[Designation],
+    time_config: TokenTimeConfig,
 ) -> Result<(), EngineError> {
     let mut verifier = CapabilityVerifier::new(
         token.to_string(),
@@ -157,7 +168,8 @@ pub fn verify_at_anchor(
         resource.to_string(),
         operation.to_string(),
     )
-    .anchor(anchor);
+    .anchor(anchor)
+    .with_time(time_config);
     for d in designations {
         verifier = verifier.with_designation(d.label.clone(), d.value.clone());
     }
@@ -235,7 +247,33 @@ mod tests {
     }
 
     fn verifies(token: &str, authority: &KeyPair, anchor: &str) -> bool {
-        verify_at_anchor(token, authority.public(), "res:x", "read", anchor, &[]).is_ok()
+        verify_at_anchor(
+            token,
+            authority.public(),
+            "res:x",
+            "read",
+            anchor,
+            &[],
+            TokenTimeConfig::default(),
+        )
+        .is_ok()
+    }
+
+    /// Verify at a fixed clock `at` (seconds), for expiry assertions.
+    fn verifies_at(token: &str, authority: &KeyPair, anchor: &str, at: i64) -> bool {
+        verify_at_anchor(
+            token,
+            authority.public(),
+            "res:x",
+            "read",
+            anchor,
+            &[],
+            TokenTimeConfig {
+                start_time: Some(at),
+                ..Default::default()
+            },
+        )
+        .is_ok()
     }
 
     #[test]
@@ -256,6 +294,7 @@ mod tests {
             &activator,
             Duration::from_secs(300),
             &facet,
+            TokenTimeConfig::default(),
         )
         .unwrap();
         let key = intermediary_facet_key(&activated, authority.public()).unwrap();
@@ -285,6 +324,7 @@ mod tests {
             &activator,
             Duration::from_secs(300),
             "facet-A",
+            TokenTimeConfig::default(),
         )
         .unwrap();
 
@@ -306,6 +346,7 @@ mod tests {
             &rogue,
             Duration::from_secs(300),
             "facet-A",
+            TokenTimeConfig::default(),
         )
         .unwrap();
         let completed = complete_facet(&activated, authority.public(), &rogue, "facet-A").unwrap();
@@ -397,8 +438,52 @@ mod tests {
                     label: "tenant".into(),
                     value: "t-1".into(),
                 }],
+                TokenTimeConfig::default(),
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn activation_window_is_clock_injectable() {
+        // The headline temporal claim at the mechanism boundary: activating a
+        // long-lived intermediate tightens its effective lifetime to `valid_for`,
+        // asserted deterministically with an injected clock (no sleep).
+        let (authority, activator) = roles();
+        let base = 1_000_000_000;
+        let clock = TokenTimeConfig {
+            start_time: Some(base),
+            ..Default::default()
+        };
+
+        // Intermediate minted with a 1-hour window at `base`.
+        let inert = mint_inert(
+            &authority,
+            "agent",
+            "res:x",
+            "read",
+            "tool:x",
+            activator.public(),
+            Duration::from_secs(3600),
+            clock,
+        )
+        .unwrap();
+        // Activate at `base`, tightening to a 5-minute window.
+        let activated = activate(
+            &inert,
+            authority.public(),
+            &activator,
+            Duration::from_secs(300),
+            "facet-A",
+            clock,
+        )
+        .unwrap();
+        let completed =
+            complete_facet(&activated, authority.public(), &activator, "facet-A").unwrap();
+
+        // Inside the activation window: ok. Past it (but inside the 1-hour mint
+        // window): rejected -- activation shortened the lifetime.
+        assert!(verifies_at(&completed, &authority, "tool:x", base + 299));
+        assert!(!verifies_at(&completed, &authority, "tool:x", base + 301));
     }
 }

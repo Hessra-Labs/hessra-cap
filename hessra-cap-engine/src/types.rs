@@ -129,10 +129,10 @@ pub enum AnchorBinding {
     Principal(ObjectId),
 }
 
-/// A capability grant: permission for a subject to perform operations on a target.
+/// A capability: authority for a subject to perform operations on a target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapabilityGrant {
-    /// The target object this capability grants access to.
+pub struct Capability {
+    /// The target object this capability authorizes access to.
     pub target: ObjectId,
     /// The operations allowed on the target.
     pub operations: Vec<Operation>,
@@ -216,14 +216,14 @@ impl Default for SessionConfig {
 
 /// Result of a policy evaluation.
 ///
-/// Policy evaluation decides capability grants only. Exposure restrictions are
+/// Policy evaluation decides capability authorization only. Exposure restrictions are
 /// no longer a policy decision: they are enforced at mint time by the context
 /// token's `reject if exposure(...)` rules (see
 /// [`PolicyBackend::precluding_labels`] for the engine's gather step). There is
 /// therefore no `DeniedByExposure` variant.
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {
-    /// The capability request is granted. `anchor` carries the resolved anchor
+    /// The capability request is authorized. `anchor` carries the resolved anchor
     /// principal, if the matched declaration is anchor-bound. The CList policy
     /// resolves `AnchorBinding::Subject` to the requesting subject before
     /// returning, so the engine sees a concrete principal id (or `None`).
@@ -231,7 +231,7 @@ pub enum PolicyDecision {
     /// matched policy entry; the engine attaches these at mint time alongside
     /// any caller-supplied designations and validates the union against the
     /// target's schema.
-    Granted {
+    Authorized {
         anchor: Option<ObjectId>,
         designations: Vec<Designation>,
     },
@@ -240,8 +240,8 @@ pub enum PolicyDecision {
 }
 
 impl PolicyDecision {
-    pub fn is_granted(&self) -> bool {
-        matches!(self, PolicyDecision::Granted { .. })
+    pub fn is_authorized(&self) -> bool {
+        matches!(self, PolicyDecision::Authorized { .. })
     }
 }
 
@@ -252,7 +252,7 @@ impl PolicyDecision {
 pub trait PolicyBackend: Send + Sync {
     /// Evaluate whether a subject can access a target with the given operation.
     ///
-    /// This decides capability grants only. Exposure restrictions are enforced
+    /// This decides capability authorization only. Exposure restrictions are enforced
     /// separately at mint time by the context token's `reject if exposure(...)`
     /// rules; the backend contributes the gather data via
     /// [`Self::precluding_labels`] but does not make the block decision here.
@@ -303,18 +303,18 @@ pub trait PolicyBackend: Send + Sync {
         Vec::new()
     }
 
-    /// List all capability grants for a subject (for introspection and audit).
-    fn list_grants(&self, subject: &ObjectId) -> Vec<CapabilityGrant>;
+    /// List all capabilities a subject holds (for introspection and audit).
+    fn list_capabilities(&self, subject: &ObjectId) -> Vec<Capability>;
 
     /// Check if a subject can delegate capabilities to other objects.
     fn can_delegate(&self, subject: &ObjectId) -> bool;
 
-    /// Enumerate every (subject, grant) pair the policy declares. Used by the
+    /// Enumerate every (subject, capability) pair the policy declares. Used by the
     /// engine to cross-validate static designations against schemas at
     /// construction time. The default implementation returns an empty vector,
-    /// which disables schema cross-validation; backends that store grants
+    /// which disables schema cross-validation; backends that store capabilities
     /// statically (e.g., CList) should override this.
-    fn all_grants(&self) -> Vec<(ObjectId, CapabilityGrant)> {
+    fn all_capabilities(&self) -> Vec<(ObjectId, Capability)> {
         Vec::new()
     }
 
@@ -330,31 +330,23 @@ pub trait PolicyBackend: Send + Sync {
         None
     }
 
-    /// Whether `subject` holds a grant for `(target, operation)`, ignoring
-    /// any current exposure context. Used by the engine's chain check to
-    /// verify ancestor authority without conflating exposure (which is the
-    /// requesting subject's own running state, not an inherited property).
+    /// Look up the full capability `subject` holds for `(target, operation)`,
+    /// if any, ignoring any current exposure context. The returned
+    /// [`Capability`] carries the capability's static designations and anchor
+    /// binding, which the engine's chain check uses to verify ancestor
+    /// authority and enforce designation containment (without conflating
+    /// exposure, which is the requesting subject's own running state, not an
+    /// inherited property).
     ///
-    /// The default delegates to [`Self::lookup_grant`]. Backends may override
-    /// for efficiency.
-    fn has_grant(&self, subject: &ObjectId, target: &ObjectId, operation: &Operation) -> bool {
-        self.lookup_grant(subject, target, operation).is_some()
-    }
-
-    /// Look up the full grant `subject` holds for `(target, operation)`, if
-    /// any. The returned [`CapabilityGrant`] carries the grant's static
-    /// designations and anchor binding, which the engine uses for
-    /// designation-containment enforcement during the chain check.
-    ///
-    /// The default scans [`Self::list_grants`]. Backends with a direct
-    /// `(subject, target, op) -> grant` lookup may override for efficiency.
-    fn lookup_grant(
+    /// The default scans [`Self::list_capabilities`]. Backends with a direct
+    /// `(subject, target, op) -> capability` lookup may override for efficiency.
+    fn lookup_capability(
         &self,
         subject: &ObjectId,
         target: &ObjectId,
         operation: &Operation,
-    ) -> Option<CapabilityGrant> {
-        self.list_grants(subject)
+    ) -> Option<Capability> {
+        self.list_capabilities(subject)
             .into_iter()
             .find(|g| g.target == *target && g.operations.iter().any(|o| o == operation))
     }

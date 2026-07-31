@@ -31,8 +31,8 @@ pub use resolver::{
     NoopResolver, RequestUrl, ResolverError, WebappResolver, WebappResolverBuilder,
 };
 pub use types::{
-    AnchorBinding, CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions,
-    MintResult, ObjectId, Operation, PolicyBackend, PolicyDecision, SessionConfig,
+    AnchorBinding, Capability, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult,
+    ObjectId, Operation, PolicyBackend, PolicyDecision, SessionConfig,
 };
 
 // Re-export commonly needed types from token crates

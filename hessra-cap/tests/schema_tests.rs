@@ -94,7 +94,7 @@ operations = []
 
 #[test]
 fn engine_with_schema_enforces_required_designations() {
-    // Policy grants agent:openclaw read on filesystem:source. The schema
+    // Policy declares agent:openclaw read on filesystem:source. The schema
     // requires path_prefix. Without that designation, mint must fail.
     let policy = CListPolicy::from_toml(
         r#"

@@ -404,19 +404,19 @@ fn test_evaluate_without_minting() {
         &ObjectId::new("tool:file-read"),
         &Operation::new("invoke"),
     );
-    assert!(decision.is_granted());
+    assert!(decision.is_authorized());
 
     let decision = engine.evaluate(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:nonexistent"),
         &Operation::new("invoke"),
     );
-    assert!(!decision.is_granted());
+    assert!(!decision.is_authorized());
 }
 
 #[test]
 fn test_exposure_blocks_mint() {
-    // Exposure no longer changes the grant decision; it blocks at mint time
+    // Exposure no longer changes the authorization decision; it blocks at mint time
     // via the context token's reject rules.
     let engine = test_engine();
 
@@ -428,13 +428,13 @@ fn test_exposure_blocks_mint() {
         .add_exposure(&context, &ObjectId::new("data:user-ssn"))
         .expect("Should add exposure");
 
-    // The grant itself is still granted (exposure is not a policy decision).
+    // The capability itself is still authorized (exposure is not a policy decision).
     let decision = engine.evaluate(
         &ObjectId::new("agent:openclaw"),
         &ObjectId::new("tool:web-search"),
         &Operation::new("invoke"),
     );
-    assert!(decision.is_granted());
+    assert!(decision.is_authorized());
 
     // But minting with the exposed context is blocked by the token's reject
     // rule (PII:SSN blocks tool:web-search).
@@ -462,10 +462,10 @@ fn test_exposure_blocks_mint() {
 // =========================================================================
 
 #[test]
-fn test_list_grants() {
+fn test_list_capabilities() {
     let engine = test_engine();
-    let grants = engine.list_grants(&ObjectId::new("agent:openclaw"));
-    assert_eq!(grants.len(), 6);
+    let caps = engine.list_capabilities(&ObjectId::new("agent:openclaw"));
+    assert_eq!(caps.len(), 6);
 }
 
 #[test]

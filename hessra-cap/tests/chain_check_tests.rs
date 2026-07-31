@@ -6,7 +6,7 @@ use hessra_cap::{
 };
 
 #[test]
-fn sub_identity_with_matching_grant_succeeds_when_parent_has_grant() {
+fn sub_identity_with_matching_capability_succeeds_when_parent_has_capability() {
     let policy = CListPolicy::from_toml(
         r#"
 [[objects]]
@@ -34,12 +34,12 @@ capabilities = [
             &Operation::new("invoke"),
             None,
         )
-        .expect("sub-identity mint succeeds when parent has the grant too");
+        .expect("sub-identity mint succeeds when parent holds the capability too");
 }
 
 #[test]
-fn sub_identity_fails_when_parent_lacks_grant() {
-    // Sub-identity has the grant but its parent doesn't. Mint must fail.
+fn sub_identity_fails_when_parent_lacks_capability() {
+    // Sub-identity holds the capability but its parent doesn't. Mint must fail.
     let policy = CListPolicy::from_toml(
         r#"
 [[objects]]
@@ -84,9 +84,9 @@ capabilities = [
 }
 
 #[test]
-fn transitive_chain_walk_catches_grandparent_missing_grant() {
+fn transitive_chain_walk_catches_grandparent_missing_capability() {
     // Three-level chain. Both immediate parent and the grandchild have the
-    // grant; the root does not. The chain walk reaches the root and fails.
+    // capability; the root does not. The chain walk reaches the root and fails.
     let policy = CListPolicy::from_toml(
         r#"
 [[objects]]
@@ -157,12 +157,12 @@ capabilities = [
 }
 
 #[test]
-fn removing_parent_grant_revokes_descendants_on_next_mint() {
-    // Demonstrates transitive revocation. With the parent's grant present
-    // both mint. Reload the policy without the parent's grant: the
-    // descendant's mint now fails even though its own grant is still there.
+fn removing_parent_capability_revokes_descendants_on_next_mint() {
+    // Demonstrates transitive revocation. With the parent's capability present
+    // both mint. Reload the policy without the parent's capability: the
+    // descendant's mint now fails even though its own capability is still there.
 
-    let policy_with_parent_grant = CListPolicy::from_toml(
+    let policy_with_parent_capability = CListPolicy::from_toml(
         r#"
 [[objects]]
 id = "user:jake"
@@ -180,7 +180,7 @@ capabilities = [
     )
     .expect("policy parses");
 
-    let engine = CapabilityEngine::with_generated_keys(policy_with_parent_grant);
+    let engine = CapabilityEngine::with_generated_keys(policy_with_parent_capability);
     engine
         .mint_capability(
             &ObjectId::new("user:jake:ci_cd"),
@@ -190,8 +190,8 @@ capabilities = [
         )
         .expect("first mint succeeds");
 
-    // Now load a new policy with the parent's grant removed.
-    let policy_without_parent_grant = CListPolicy::from_toml(
+    // Now load a new policy with the parent's capability removed.
+    let policy_without_parent_capability = CListPolicy::from_toml(
         r#"
 [[objects]]
 id = "user:jake"
@@ -207,7 +207,7 @@ capabilities = [
     )
     .expect("policy parses");
 
-    let engine = CapabilityEngine::with_generated_keys(policy_without_parent_grant);
+    let engine = CapabilityEngine::with_generated_keys(policy_without_parent_capability);
     let err = match engine.mint_capability(
         &ObjectId::new("user:jake:ci_cd"),
         &ObjectId::new("tool:web-search"),
@@ -305,8 +305,8 @@ capabilities = [
 
 #[test]
 fn chain_check_enforces_parent_designation_envelope() {
-    // Parent declares the grant with a static designation tenant_id=acme.
-    // Child declares the same grant with a different static designation
+    // Parent declares the capability with a static designation tenant_id=acme.
+    // Child declares the same capability with a different static designation
     // tenant_id=other. A child mint would attach tenant_id=other, exceeding
     // the parent's envelope on the tenant_id label. The chain check must
     // reject that mint with DesignationNotCovered naming the parent's
@@ -359,7 +359,7 @@ capabilities = [
 
 #[test]
 fn chain_check_allows_when_caller_designations_cover_parent_envelope() {
-    // Parent requires tenant_id=acme. Child's grant doesn't pre-declare it.
+    // Parent requires tenant_id=acme. Child's capability doesn't pre-declare it.
     // Caller supplies tenant_id=acme via mint_designated_capability, which
     // covers the parent's envelope, and the mint succeeds.
     let policy = CListPolicy::from_toml(

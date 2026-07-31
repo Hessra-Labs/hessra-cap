@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use hessra_cap_engine::{
-    AnchorBinding, CapabilityGrant, Designation, ExposureLabel, ObjectId, Operation, PolicyBackend,
+    AnchorBinding, Capability, Designation, ExposureLabel, ObjectId, Operation, PolicyBackend,
     PolicyDecision,
 };
 
@@ -129,7 +129,7 @@ impl PolicyBackend for CListPolicy {
         target: &ObjectId,
         operation: &Operation,
     ) -> PolicyDecision {
-        // Capability grant only. Exposure restrictions are enforced at mint
+        // Capability authorization only. Exposure restrictions are enforced at mint
         // time by the context token's reject rules (see `precluding_labels`
         // and `compound_reject_rules`).
         let Some(object) = self.objects.get(subject.as_str()) else {
@@ -148,7 +148,7 @@ impl PolicyBackend for CListPolicy {
                     AnchorBinding::Subject => subject.clone(),
                     AnchorBinding::Principal(p) => p.clone(),
                 });
-                return PolicyDecision::Granted {
+                return PolicyDecision::Authorized {
                     anchor,
                     designations: cap.designations.clone(),
                 };
@@ -272,13 +272,13 @@ impl PolicyBackend for CListPolicy {
         pairs
     }
 
-    fn list_grants(&self, subject: &ObjectId) -> Vec<CapabilityGrant> {
+    fn list_capabilities(&self, subject: &ObjectId) -> Vec<Capability> {
         self.objects
             .get(subject.as_str())
             .map(|obj| {
                 obj.capabilities
                     .iter()
-                    .map(|cap| CapabilityGrant {
+                    .map(|cap| Capability {
                         target: ObjectId::new(&cap.target),
                         operations: cap.operations.iter().map(Operation::new).collect(),
                         anchor: cap.anchor.clone(),
@@ -302,13 +302,13 @@ impl PolicyBackend for CListPolicy {
             .and_then(|obj| obj.parent.as_deref().map(ObjectId::new))
     }
 
-    fn all_grants(&self) -> Vec<(ObjectId, CapabilityGrant)> {
+    fn all_capabilities(&self) -> Vec<(ObjectId, Capability)> {
         let mut result = Vec::new();
         for (subject, obj) in &self.objects {
             for cap in &obj.capabilities {
                 result.push((
                     ObjectId::new(subject.as_str()),
-                    CapabilityGrant {
+                    Capability {
                         target: ObjectId::new(&cap.target),
                         operations: cap.operations.iter().map(Operation::new).collect(),
                         anchor: cap.anchor.clone(),
@@ -363,14 +363,14 @@ blocks = ["tool:*"]
     }
 
     #[test]
-    fn test_basic_grant() {
+    fn test_basic_capability() {
         let policy = test_policy();
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:file-read"),
             &Operation::new("invoke"),
         );
-        assert!(decision.is_granted());
+        assert!(decision.is_authorized());
     }
 
     #[test]
@@ -381,7 +381,7 @@ blocks = ["tool:*"]
             &ObjectId::new("tool:delete-everything"),
             &Operation::new("invoke"),
         );
-        assert!(!decision.is_granted());
+        assert!(!decision.is_authorized());
     }
 
     #[test]
@@ -392,7 +392,7 @@ blocks = ["tool:*"]
             &ObjectId::new("service:user-service"),
             &Operation::new("delete"),
         );
-        assert!(!decision.is_granted());
+        assert!(!decision.is_authorized());
     }
 
     #[test]
@@ -403,19 +403,19 @@ blocks = ["tool:*"]
             &ObjectId::new("tool:file-read"),
             &Operation::new("invoke"),
         );
-        assert!(!decision.is_granted());
+        assert!(!decision.is_authorized());
     }
 
     #[test]
     fn test_evaluate_ignores_exposure() {
-        // evaluate decides the grant only; exposure no longer factors in.
+        // evaluate decides authorization only; exposure no longer factors in.
         let policy = test_policy();
         let decision = policy.evaluate(
             &ObjectId::new("agent:openclaw"),
             &ObjectId::new("tool:web-search"),
             &Operation::new("invoke"),
         );
-        assert!(decision.is_granted());
+        assert!(decision.is_authorized());
     }
 
     #[test]
@@ -471,10 +471,10 @@ blocks = ["tool:*"]
     }
 
     #[test]
-    fn test_list_grants() {
+    fn test_list_capabilities() {
         let policy = test_policy();
-        let grants = policy.list_grants(&ObjectId::new("agent:openclaw"));
-        assert_eq!(grants.len(), 5);
+        let caps = policy.list_capabilities(&ObjectId::new("agent:openclaw"));
+        assert_eq!(caps.len(), 5);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::error::EngineError;
 use crate::mechanism::{self, FACET_LABEL, FacetLedger};
 use crate::resolver::{DesignationContext, DesignationResolver, NoopResolver};
 use crate::types::{
-    CapabilityGrant, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
+    Capability, Designation, ExposureLabel, IdentityConfig, MintOptions, MintResult, ObjectId,
     Operation, PolicyBackend, PolicyDecision, SessionConfig,
 };
 
@@ -163,9 +163,9 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     // Policy evaluation
     // =========================================================================
 
-    /// Evaluate whether a capability request would be granted, without minting.
+    /// Evaluate whether a capability request would be authorized, without minting.
     ///
-    /// This decides the capability grant only (does the subject hold this
+    /// This decides capability authorization only (does the subject hold this
     /// capability?). Exposure enforcement is not part of this decision: it
     /// happens at mint time via the context token's `reject if exposure(...)`
     /// rules (see [`Self::mint_designated_capability`]).
@@ -186,7 +186,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     ///
     /// The engine:
     /// 1. Evaluates the policy (capability space + exposure restrictions)
-    /// 2. If granted, mints a capability token via `hessra-cap-token`
+    /// 2. If authorized, mints a capability token via `hessra-cap-token`
     /// 3. If the target has data classifications, auto-applies exposure to the context
     ///
     /// Returns a `MintResult` containing the token and optionally an updated context.
@@ -400,10 +400,10 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         context: Option<&ContextToken>,
         options: MintOptions,
     ) -> Result<MintResult, EngineError> {
-        // Step 1: Evaluate policy (capability grant only).
+        // Step 1: Evaluate policy (capability authorization only).
         let decision = self.evaluate(subject, target, operation);
         let (policy_anchor, static_designations) = match decision {
-            PolicyDecision::Granted {
+            PolicyDecision::Authorized {
                 anchor,
                 designations,
             } => (anchor, designations),
@@ -437,11 +437,11 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         combined.extend(caller_designations.iter().cloned());
 
         // Step 3: Delegated identity chain check. Every ancestor of `subject`
-        // must independently hold a grant for `(target, operation)` whose
+        // must independently hold a capability for `(target, operation)` whose
         // static designations are all present in the cap being minted. This
         // encodes the model's "sub-identity capabilities bounded by parent
         // identity capabilities" property as a structural mint-time check,
-        // giving transitive revocation for free: removing a grant from an
+        // giving transitive revocation for free: removing a capability from an
         // ancestor (or narrowing its designation envelope) invalidates
         // descendants on the next mint.
         self.walk_chain(subject, target, operation, &combined)?;
@@ -574,13 +574,13 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     }
 
     /// Walk the parent chain of `subject` and verify every ancestor holds a
-    /// grant for `(target, operation)` whose static designations are all
+    /// capability for `(target, operation)` whose static designations are all
     /// present in `combined`. Returns [`EngineError::ChainCheckFailed`] on
     /// the first ancestor that fails either check.
     ///
     /// This enforces "sub-identity ⊆ parent" as a structural mint-time check
     /// per the model's §4.1, covering both target/operation authority and
-    /// the per-grant designation envelope: removing a grant or narrowing
+    /// the per-capability designation envelope: removing a capability or narrowing
     /// its designations on any ancestor invalidates all descendants on the
     /// next mint (transitive revocation, live policy). Cycle safety comes
     /// from policy load (`PolicyConfigError::ParentCycle`).
@@ -593,18 +593,18 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     ) -> Result<(), EngineError> {
         let mut cursor = self.policy.parent(subject);
         while let Some(ancestor) = cursor {
-            let Some(grant) = self.policy.lookup_grant(&ancestor, target, operation) else {
+            let Some(cap) = self.policy.lookup_capability(&ancestor, target, operation) else {
                 return Err(EngineError::ChainCheckFailed {
                     subject: subject.clone(),
                     ancestor: ancestor.clone(),
                     target: target.clone(),
                     operation: operation.clone(),
-                    reason: crate::error::ChainCheckFailure::NoGrant,
+                    reason: crate::error::ChainCheckFailure::NoCapability,
                 });
             };
-            // For every static designation the ancestor's grant requires,
+            // For every static designation the ancestor's capability requires,
             // the cap being minted must include a matching (label, value).
-            for req in &grant.designations {
+            for req in &cap.designations {
                 let covered = combined
                     .iter()
                     .any(|d| d.label == req.label && d.value == req.value);
@@ -826,9 +826,9 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     // Introspection
     // =========================================================================
 
-    /// List all capability grants for a subject.
-    pub fn list_grants(&self, subject: &ObjectId) -> Vec<CapabilityGrant> {
-        self.policy.list_grants(subject)
+    /// List all capabilities a subject holds.
+    pub fn list_capabilities(&self, subject: &ObjectId) -> Vec<Capability> {
+        self.policy.list_capabilities(subject)
     }
 
     /// Check if a subject can delegate capabilities.
@@ -837,7 +837,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
     }
 }
 
-/// Walk every (subject, grant) pair the policy declares and check that any
+/// Walk every (subject, capability) pair the policy declares and check that any
 /// static designation labels are declared in the schema for the matching
 /// (target, operation). Returns the first mismatch found.
 fn cross_validate_schema_against_policy<P: PolicyBackend>(
@@ -848,22 +848,22 @@ fn cross_validate_schema_against_policy<P: PolicyBackend>(
         // An empty schema disables enforcement; nothing to cross-validate.
         return Ok(());
     }
-    for (_subject, grant) in policy.all_grants() {
-        if grant.designations.is_empty() {
+    for (_subject, cap) in policy.all_capabilities() {
+        if cap.designations.is_empty() {
             continue;
         }
-        for op in &grant.operations {
-            let Some(required) = schema.required_designations(grant.target.as_str(), op.as_str())
+        for op in &cap.operations {
+            let Some(required) = schema.required_designations(cap.target.as_str(), op.as_str())
             else {
                 // No schema entry for this (target, op) means no enforcement
                 // runs at mint time, so policy-declared static designations
                 // are unconstrained too. Allow.
                 continue;
             };
-            for d in &grant.designations {
+            for d in &cap.designations {
                 if !required.iter().any(|label| label == &d.label) {
                     return Err(EngineError::UnknownLabelInPolicy {
-                        target: grant.target.clone(),
+                        target: cap.target.clone(),
                         operation: op.clone(),
                         label: d.label.clone(),
                     });

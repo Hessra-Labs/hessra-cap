@@ -36,6 +36,7 @@ impl LeafTool {
             &self.operation,
             &self.anchor,
             designations,
+            TokenTimeConfig::default(),
         )
         .is_ok()
     }
@@ -98,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         verdict(!clock.verify(&scoped, &[]))
     );
     println!(
-        "   ...and granted once the designation is supplied : {}",
+        "   ...and authorized once the designation is supplied : {}",
         verdict(clock.verify(&scoped, std::slice::from_ref(&zone)))
     );
 
@@ -134,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     label: mechanism::FACET_LABEL.into(),
                     value: live.to_string(),
                 }],
+                TokenTimeConfig::default(),
             )
         })
     };
