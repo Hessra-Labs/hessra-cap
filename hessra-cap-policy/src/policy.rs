@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use hessra_cap_engine::{
     AnchorBinding, Capability, Designation, ExposureLabel, ObjectId, Operation, PolicyBackend,
-    PolicyDecision,
+    PolicyDecision, compound_label, compound_members,
 };
 
 use crate::config::{ExposureRuleConfig, PolicyConfig};
@@ -105,21 +105,6 @@ impl CListPolicy {
             exposure_rules: Vec::new(),
         }
     }
-
-    /// The complete set of concrete exposure labels any data source can attest,
-    /// derived from the declared classifications. Compound reject rules are
-    /// expanded against this universe.
-    fn label_universe(&self) -> Vec<String> {
-        let mut universe: Vec<String> = Vec::new();
-        for labels in self.classifications.values() {
-            for label in labels {
-                if !universe.contains(label) {
-                    universe.push(label.clone());
-                }
-            }
-        }
-        universe
-    }
 }
 
 impl PolicyBackend for CListPolicy {
@@ -199,23 +184,24 @@ impl PolicyBackend for CListPolicy {
             }
 
             if rule.r#match == "all" {
-                // Conjunction: contribute the rule's matching attested labels
-                // only when every pattern is satisfied by some attested label.
-                // The token's compound reject enforces the AND; gating here
-                // keeps a single member from tripping a per-label reject meant
-                // for a different target.
-                let all_matched = rule.labels.iter().all(|pattern| {
-                    attested
-                        .iter()
-                        .any(|label| matches_pattern(pattern, label.as_str()))
-                });
-                if !all_matched {
-                    continue;
+                // Conjunction: contribute the synthesized compound label, not
+                // its members. The compound only exists as a reject rule if the
+                // session actually satisfied the conjunction, so asserting it
+                // cannot trip a per-label reject meant for a different target --
+                // the hazard the old member-gating had to work around.
+                //
+                // Restricted to compounds already attested: this is the gather
+                // step, not the conferral step, and a conjunction that has not
+                // been conferred yet must not block.
+                for label in self.satisfied_compound_labels(attested) {
+                    if attested.contains(&label) {
+                        push_unique(&label, &mut out);
+                    }
                 }
+                continue;
             }
 
-            // "any" rules (and satisfied "all" rules) contribute every attested
-            // label that matches one of their patterns.
+            // "any" rules contribute every attested label matching a pattern.
             for label in attested {
                 let matches = rule
                     .labels
@@ -230,46 +216,74 @@ impl PolicyBackend for CListPolicy {
         out
     }
 
-    fn compound_reject_rules(&self) -> Vec<(ExposureLabel, ExposureLabel)> {
-        let universe = self.label_universe();
-        let expand = |pattern: &str| -> Vec<String> {
-            universe
-                .iter()
-                .filter(|label| matches_pattern(pattern, label))
-                .cloned()
-                .collect()
-        };
+    fn satisfied_compound_labels(&self, attested: &[ExposureLabel]) -> Vec<ExposureLabel> {
+        let mut out: Vec<ExposureLabel> = Vec::new();
+        if attested.is_empty() {
+            return out;
+        }
 
-        let mut pairs: Vec<(ExposureLabel, ExposureLabel)> = Vec::new();
         for rule in &self.exposure_rules {
-            if rule.r#match != "all" {
+            if rule.r#match != "all" || rule.labels.len() < 2 {
                 continue;
             }
-            if rule.labels.len() != 2 {
-                tracing::warn!(
-                    labels = ?rule.labels,
-                    "compound exposure rule has {} labels; only two-label compound \
-                     rules are enforced under reject-if, skipping",
-                    rule.labels.len()
-                );
+
+            // One bucket of concrete attested labels per pattern. A pattern
+            // nothing matches means the conjunction has not occurred, so the
+            // rule contributes nothing.
+            //
+            // Compounds already in `attested` are excluded as members: a
+            // conjunction is over the plain labels a session actually holds,
+            // and letting a compound stand in for its own member would build
+            // `a&(a&b)`-shaped nonsense.
+            let mut buckets: Vec<Vec<&str>> = Vec::with_capacity(rule.labels.len());
+            for pattern in &rule.labels {
+                let bucket: Vec<&str> = attested
+                    .iter()
+                    .map(|l| l.as_str())
+                    .filter(|l| compound_members(l).is_none())
+                    .filter(|l| matches_pattern(pattern, l))
+                    .collect();
+                if bucket.is_empty() {
+                    break;
+                }
+                buckets.push(bucket);
+            }
+            if buckets.len() != rule.labels.len() {
                 continue;
             }
-            for first in expand(&rule.labels[0]) {
-                for second in expand(&rule.labels[1]) {
-                    if first == second {
-                        continue;
+
+            // Cross-product over the buckets. Bounded by what the session has
+            // actually been exposed to, not by the classification universe --
+            // which is the whole reason this replaced a mint-time expansion.
+            let mut combos: Vec<Vec<&str>> = vec![Vec::new()];
+            for bucket in &buckets {
+                let mut next = Vec::with_capacity(combos.len() * bucket.len());
+                for combo in &combos {
+                    for label in bucket {
+                        let mut extended = combo.clone();
+                        extended.push(label);
+                        next.push(extended);
                     }
-                    let pair = (ExposureLabel::new(&first), ExposureLabel::new(&second));
-                    let dup = pairs.iter().any(|(a, b)| {
-                        (*a == pair.0 && *b == pair.1) || (*a == pair.1 && *b == pair.0)
-                    });
-                    if !dup {
-                        pairs.push(pair);
-                    }
+                }
+                combos = next;
+            }
+
+            for combo in combos {
+                // `compound_label` sorts and dedupes, so distinct combinations
+                // that name the same set collapse here. It errors when fewer
+                // than two distinct members remain -- a combination that picked
+                // the same label for every pattern -- which is not a
+                // conjunction and is correctly skipped.
+                let Ok(label) = compound_label(&combo) else {
+                    continue;
+                };
+                let label = ExposureLabel::new(&label);
+                if !out.contains(&label) {
+                    out.push(label);
                 }
             }
         }
-        pairs
+        out
     }
 
     fn list_capabilities(&self, subject: &ObjectId) -> Vec<Capability> {
@@ -433,26 +447,67 @@ blocks = ["tool:*"]
     }
 
     #[test]
-    fn test_precluding_labels_compound_rule_gating() {
+    fn test_compound_rule_synthesizes_then_precludes() {
         let policy = test_policy();
 
-        // The compound rule (PII:* AND financial:*) blocks tool:*. A single
-        // member must not contribute candidate facts.
+        // The compound rule (PII:* AND financial:*) blocks tool:*.
+        // One member: no conjunction, nothing synthesized, nothing blocked.
         let pii_only = vec![ExposureLabel::new("PII:email")];
-        let precluding = policy.precluding_labels(&ObjectId::new("tool:file-read"), &pii_only);
+        assert!(policy.satisfied_compound_labels(&pii_only).is_empty());
         assert!(
-            precluding.is_empty(),
-            "a single compound member must not be asserted"
+            policy
+                .precluding_labels(&ObjectId::new("tool:file-read"), &pii_only)
+                .is_empty(),
+            "a single compound member must not block"
         );
 
-        // Both members present -> contribute both matching attested labels.
+        // Both members: the conjunction is satisfied, so a compound label is
+        // synthesized from the concrete labels that matched.
         let both = vec![
             ExposureLabel::new("PII:email"),
             ExposureLabel::new("financial:balance"),
         ];
-        let precluding = policy.precluding_labels(&ObjectId::new("tool:file-read"), &both);
-        assert!(precluding.contains(&ExposureLabel::new("PII:email")));
-        assert!(precluding.contains(&ExposureLabel::new("financial:balance")));
+        let synthesized = policy.satisfied_compound_labels(&both);
+        let expected = ExposureLabel::new(
+            compound_label(&["PII:email", "financial:balance"]).expect("compound"),
+        );
+        assert_eq!(synthesized, vec![expected.clone()]);
+
+        // Synthesized but not yet conferred -> still nothing to assert. The
+        // gather step reads the context; it does not write it.
+        assert!(
+            policy
+                .precluding_labels(&ObjectId::new("tool:file-read"), &both)
+                .is_empty(),
+            "an unconferred conjunction must not block"
+        );
+
+        // Once conferred, the compound is what gets asserted -- not its members.
+        let mut attested = both.clone();
+        attested.push(expected.clone());
+        let precluding = policy.precluding_labels(&ObjectId::new("tool:file-read"), &attested);
+        assert_eq!(precluding, vec![expected]);
+    }
+
+    #[test]
+    fn test_compound_rule_crosses_only_attested_labels() {
+        // The old encoding expanded patterns against the whole classification
+        // universe at mint. Synthesis crosses only what the session actually
+        // holds, so two matches on one side yield two compounds -- not the
+        // universe-sized product.
+        let policy = test_policy();
+
+        let attested = vec![
+            ExposureLabel::new("PII:email"),
+            ExposureLabel::new("financial:balance"),
+            ExposureLabel::new("financial:card"),
+        ];
+        let synthesized = policy.satisfied_compound_labels(&attested);
+        assert_eq!(synthesized.len(), 2, "got {synthesized:?}");
+        for other in ["financial:balance", "financial:card"] {
+            let want = ExposureLabel::new(compound_label(&["PII:email", other]).expect("compound"));
+            assert!(synthesized.contains(&want), "missing {want:?}");
+        }
     }
 
     #[test]

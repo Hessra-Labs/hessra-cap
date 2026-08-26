@@ -197,9 +197,18 @@ pub fn intermediary_facet_key(token: &str, root_pk: PublicKey) -> Result<String,
 // classification/exposure-rules path stays a layer up in `CapabilityEngine`.
 
 /// Whether `context` (signed by `signer_pk`) already carries an exposure `label`
-/// that should preclude a handout. Returns `true` when the label is present (a
-/// precluding rule would fire) and `false` when it is absent or the context is
-/// unverifiable. The precluding gate the handout step consults before issuing.
+/// that should preclude a handout. The precluding gate the handout step
+/// consults before issuing.
+///
+/// Returns `true` when the label is present (a precluding rule would fire) and
+/// `false` when it is absent. **An unverifiable context also returns `true`**:
+/// a bad signature, a wrong key, or an expired token all preclude. That is
+/// deliberate -- the alternative would hand out capabilities on the strength of
+/// a context nobody can check -- but it means an expired context blocks every
+/// precluding-labelled capability while `extract_exposure_labels`, which does
+/// not authorize, still reports the true set. Callers that surface exposure to
+/// an operator should check expiry explicitly rather than inferring it from a
+/// denial here.
 pub fn exposure_precludes(context: &str, signer_pk: PublicKey, label: &str) -> bool {
     ContextVerifier::new(context.to_string(), signer_pk)
         .excludes(label)
@@ -220,6 +229,34 @@ pub fn add_exposure(
 ) -> Result<String, EngineError> {
     hessra_context_token::add_exposure(context, signer, labels, source.to_string())
         .map_err(|e| EngineError::Context(e.to_string()))
+}
+
+/// The compound labels `definitions` makes newly conferrable, given the labels
+/// already `present`.
+///
+/// Each definition is a set of concrete member labels. A definition contributes
+/// its canonical joined label (see [`hessra_context_token::compound_label`])
+/// when every member is present and the compound itself is not yet. Definitions
+/// that name fewer than two distinct members, or whose members are not all
+/// present, contribute nothing.
+///
+/// Policy-free by construction: it takes the conjunctions to look for as data,
+/// so a caller with its own label vocabulary uses it without a `PolicyBackend`.
+/// Deciding *which* conjunctions matter is a layer up.
+pub fn synthesize_compounds(present: &[String], definitions: &[Vec<String>]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for members in definitions {
+        if !members.iter().all(|m| present.contains(m)) {
+            continue;
+        }
+        let Ok(label) = hessra_context_token::compound_label(members) else {
+            continue;
+        };
+        if !present.contains(&label) && !out.contains(&label) {
+            out.push(label);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -388,6 +425,34 @@ mod tests {
         let ctx = add_exposure(&ctx, &signer, &["tainted".to_string()], "tool:taint").unwrap();
         assert!(exposure_precludes(&ctx, signer.public(), "tainted"));
         assert!(!exposure_precludes(&ctx, signer.public(), "other"));
+    }
+
+    #[test]
+    fn synthesize_compounds_fires_only_on_full_conjunction() {
+        let def = vec![vec!["a".to_string(), "b".to_string()]];
+
+        // Partial: nothing.
+        assert!(synthesize_compounds(&["a".to_string()], &def).is_empty());
+
+        // Complete: the canonical join.
+        let present = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            synthesize_compounds(&present, &def),
+            vec!["a&b".to_string()]
+        );
+
+        // Idempotent: already conferred, so nothing to add. This is what keeps
+        // the conferral path from appending a block per call.
+        let present = vec!["a".to_string(), "b".to_string(), "a&b".to_string()];
+        assert!(synthesize_compounds(&present, &def).is_empty());
+
+        // Order in the definition does not matter, and three members work.
+        let def = vec![vec!["c".to_string(), "a".to_string(), "b".to_string()]];
+        let present = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(
+            synthesize_compounds(&present, &def),
+            vec!["a&b&c".to_string()]
+        );
     }
 
     #[test]

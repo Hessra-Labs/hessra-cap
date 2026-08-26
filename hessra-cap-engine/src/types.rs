@@ -292,14 +292,23 @@ pub trait PolicyBackend: Send + Sync {
         Vec::new()
     }
 
-    /// The set of two-label compound reject rules the engine should seed into a
-    /// freshly minted context token, as concrete label pairs. Each pair becomes
-    /// a `reject if exposure(a), exposure(b)` rule that fires only when both
-    /// labels are asserted together. Patterns in policy are expanded to
-    /// concrete labels by the backend before being returned here.
+    /// The compound (conjunction) exposure labels that `attested` now
+    /// satisfies: for every `match = "all"` rule whose every pattern is matched
+    /// by some attested label, the canonical join of the concrete labels that
+    /// matched (see [`crate::compound_label`]).
+    ///
+    /// A conjunction is expressed as a *label*, conferred once the writer
+    /// observes all of its members, rather than as a two-label reject rule in
+    /// the token. That keeps it enumerable (so a re-mint carries it forward),
+    /// removes the mint-time expansion over the classification universe, and
+    /// lifts the two-member ceiling the reject-rule encoding imposed.
+    ///
+    /// Called on the conferral path, so the returned labels are added to the
+    /// context alongside whatever triggered them. Implementations should return
+    /// every satisfied compound; the caller filters out those already attested.
     ///
     /// The default returns an empty vector (no compound rules).
-    fn compound_reject_rules(&self) -> Vec<(ExposureLabel, ExposureLabel)> {
+    fn satisfied_compound_labels(&self, _attested: &[ExposureLabel]) -> Vec<ExposureLabel> {
         Vec::new()
     }
 

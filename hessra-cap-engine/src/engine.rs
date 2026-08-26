@@ -764,18 +764,16 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
 
     /// Mint a fresh context token for a subject (new session, no exposure).
     ///
-    /// Any two-label compound reject rules the policy declares
-    /// ([`PolicyBackend::compound_reject_rules`]) are seeded into the token's
-    /// authority block so that conjunction (`AND`) exposure restrictions are
-    /// carried by the token itself.
+    /// Nothing about conjunctions is seeded here. A `match = "all"` rule
+    /// becomes a synthesized label at the moment the session satisfies it (see
+    /// [`PolicyBackend::satisfied_compound_labels`]), so a fresh token carries
+    /// only its subject and its expiry.
     pub fn mint_context(
         &self,
         subject: &ObjectId,
         session_config: SessionConfig,
     ) -> Result<ContextToken, EngineError> {
-        HessraContext::new(subject.clone(), session_config)
-            .with_compound_rejects(self.policy.compound_reject_rules())
-            .issue(&self.keypair)
+        HessraContext::new(subject.clone(), session_config).issue(&self.keypair)
     }
 
     /// Add exposure to a context token from a specific data source.
@@ -788,10 +786,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         data_source: &ObjectId,
     ) -> Result<ContextToken, EngineError> {
         let labels = self.policy.classification(data_source);
-        if labels.is_empty() {
-            return Ok(context.clone());
-        }
-        context::add_exposure_block(context, &labels, data_source, &self.keypair)
+        self.confer(context, &labels, data_source)
     }
 
     /// Add a specific exposure label directly to a context token.
@@ -801,7 +796,47 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
         label: ExposureLabel,
         source: &ObjectId,
     ) -> Result<ContextToken, EngineError> {
-        context::add_exposure_block(context, &[label], source, &self.keypair)
+        self.confer(context, &[label], source)
+    }
+
+    /// The conferral path: add `labels` to `context`, then add any compound
+    /// label the resulting set now satisfies.
+    ///
+    /// Both steps skip what is already attested, so conferring the same label
+    /// twice is a no-op rather than another signed block -- which matters
+    /// because verification cost is linear in block count and this runs on
+    /// every exposure event.
+    ///
+    /// Synthesis happens here, on the write path, because this is where the
+    /// full label set is known. A conjunction observed once is recorded once
+    /// and thereafter behaves like any other label.
+    fn confer(
+        &self,
+        context: &ContextToken,
+        labels: &[ExposureLabel],
+        source: &ObjectId,
+    ) -> Result<ContextToken, EngineError> {
+        let fresh: Vec<ExposureLabel> = labels
+            .iter()
+            .filter(|l| !context.has_exposure(l))
+            .cloned()
+            .collect();
+        let context = if fresh.is_empty() {
+            context.clone()
+        } else {
+            context::add_exposure_block(context, &fresh, source, &self.keypair)?
+        };
+
+        let compounds: Vec<ExposureLabel> = self
+            .policy
+            .satisfied_compound_labels(context.exposure_labels())
+            .into_iter()
+            .filter(|l| !context.has_exposure(l))
+            .collect();
+        if compounds.is_empty() {
+            return Ok(context);
+        }
+        context::add_exposure_block(&context, &compounds, source, &self.keypair)
     }
 
     /// Fork a context token for a sub-agent, inheriting the parent's exposure.

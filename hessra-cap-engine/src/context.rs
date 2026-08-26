@@ -57,7 +57,6 @@ impl ContextToken {
 pub struct HessraContext {
     subject: ObjectId,
     session_config: SessionConfig,
-    compound_rejects: Vec<(ExposureLabel, ExposureLabel)>,
 }
 
 impl HessraContext {
@@ -66,16 +65,7 @@ impl HessraContext {
         Self {
             subject,
             session_config,
-            compound_rejects: Vec::new(),
         }
-    }
-
-    /// Seed two-label compound reject rules into the authority block. Each pair
-    /// becomes a `reject if exposure(a), exposure(b)` rule that fires only when
-    /// both labels are asserted together at mint time.
-    pub fn with_compound_rejects(mut self, rules: Vec<(ExposureLabel, ExposureLabel)>) -> Self {
-        self.compound_rejects = rules;
-        self
     }
 
     /// Issues (builds and signs) the context token.
@@ -85,14 +75,10 @@ impl HessraContext {
             duration: self.session_config.ttl,
         };
 
-        let mut builder = hessra_context_token::HessraContext::new(
+        let builder = hessra_context_token::HessraContext::new(
             self.subject.as_str().to_string(),
             time_config,
         );
-        for (first, second) in &self.compound_rejects {
-            builder = builder
-                .with_compound_reject(first.as_str().to_string(), second.as_str().to_string());
-        }
 
         let token = builder
             .issue(keypair)

@@ -37,3 +37,11 @@ pub use types::{
 
 // Re-export commonly needed types from token crates
 pub use hessra_token_core::{KeyPair, PublicKey, TokenTimeConfig};
+
+// The exposure label vocabulary. Compound (conjunction) labels are synthesized
+// by whoever writes exposure, so a policy backend needs the same constructor
+// the mechanism layer uses -- re-exported here rather than making every backend
+// depend on `hessra-context-token` directly.
+pub use hessra_context_token::{
+    COMPOUND_DELIMITER, compound_label, compound_members, validate_plain_label,
+};
