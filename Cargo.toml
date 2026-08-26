@@ -12,9 +12,9 @@ resolver = "3"
 hessra-token-core = { version = "2.0" }
 hessra-cap-token = { version = "2.0" }
 hessra-identity-token = { version = "2.0" }
-hessra-context-token = { version = "2.0" }
-hessra-cap-engine = { path = "hessra-cap-engine", version = "0.5.0" }
-hessra-cap-policy = { path = "hessra-cap-policy", version = "0.4.0" }
+hessra-context-token = { version = "3.0" }
+hessra-cap-engine = { path = "hessra-cap-engine", version = "0.6.0" }
+hessra-cap-policy = { path = "hessra-cap-policy", version = "0.5.0" }
 hessra-cap-schema = { path = "hessra-cap-schema", version = "0.1.0" }
 biscuit-auth = { version = "6.0", features = ["pem"] }
 base64 = "0.22"
