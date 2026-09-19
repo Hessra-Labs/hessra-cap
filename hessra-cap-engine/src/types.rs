@@ -275,12 +275,12 @@ pub trait PolicyBackend: Send + Sync {
     ///
     /// This is the engine's "gather" step: it decides *which* candidate facts
     /// to test against the context token's `reject if exposure(...)` rules. The
-    /// token's reject rules make the actual block decision. The returned set
-    /// must be conjunction-aware: for a compound (`match = "all"`) rule that
-    /// blocks `target`, include the rule's labels only when every one of them
-    /// is present in `attested`, so a single member does not trip the token's
-    /// per-label reject for a different target. Single-label (`match = "any"`)
-    /// rules contribute their matching attested labels directly.
+    /// token's reject rules make the actual block decision. For a compound
+    /// (`match = "all"`) rule that blocks `target`, include only that rule's
+    /// synthesized compound labels that are already present in `attested`.
+    /// Do not contribute its individual members or compounds synthesized for
+    /// other rules. Single-label (`match = "any"`) rules contribute their
+    /// matching attested labels directly.
     ///
     /// The default returns an empty vector, modeling a backend with no exposure
     /// restrictions.

@@ -505,17 +505,7 @@ impl<P: PolicyBackend> CapabilityEngine<P> {
 
         // Step 8: Auto-apply exposure if the target has data classifications.
         let updated_context = if let Some(ctx) = context {
-            let classifications = self.policy.classification(target);
-            if classifications.is_empty() {
-                Some(ctx.clone())
-            } else {
-                Some(context::add_exposure_block(
-                    ctx,
-                    &classifications,
-                    target,
-                    &self.keypair,
-                )?)
-            }
+            Some(self.add_exposure(ctx, target)?)
         } else {
             None
         };

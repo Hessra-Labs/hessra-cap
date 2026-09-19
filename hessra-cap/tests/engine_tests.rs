@@ -298,6 +298,168 @@ fn test_manual_exposure_label() {
     assert!(exposed.has_exposure(&ExposureLabel::new("custom:sensitive")));
 }
 
+#[test]
+fn compound_rule_does_not_apply_another_rules_trigger_to_its_target() {
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "agent:test"
+capabilities = [
+    { target = "tool:first", operations = ["invoke"] },
+    { target = "tool:second", operations = ["invoke"] },
+]
+
+[[exposure_rules]]
+labels = ["secret:a", "secret:b"]
+match = "all"
+blocks = ["tool:first"]
+
+[[exposure_rules]]
+labels = ["other:x", "other:y"]
+match = "all"
+blocks = ["tool:second"]
+        "#,
+    )
+    .expect("valid policy");
+    let engine = CapabilityEngine::with_generated_keys(policy);
+    let subject = ObjectId::new("agent:test");
+    let context = engine
+        .mint_context(&subject, SessionConfig::default())
+        .expect("mint context");
+    let context = engine
+        .add_exposure_label(
+            &context,
+            ExposureLabel::new("secret:a"),
+            &ObjectId::new("data:first"),
+        )
+        .expect("add first exposure");
+    let context = engine
+        .add_exposure_label(
+            &context,
+            ExposureLabel::new("secret:b"),
+            &ObjectId::new("data:second"),
+        )
+        .expect("add second exposure");
+
+    assert!(matches!(
+        engine.mint_capability(
+            &subject,
+            &ObjectId::new("tool:first"),
+            &Operation::new("invoke"),
+            Some(&context),
+        ),
+        Err(EngineError::ExposureBlocked { labels, target })
+            if labels == vec![ExposureLabel::new("secret:a&secret:b")]
+                && target == ObjectId::new("tool:first")
+    ));
+
+    engine
+        .mint_capability(
+            &subject,
+            &ObjectId::new("tool:second"),
+            &Operation::new("invoke"),
+            Some(&context),
+        )
+        .expect("an unrelated compound trigger must not block this target");
+
+    let context = engine
+        .add_exposure_label(
+            &context,
+            ExposureLabel::new("other:x"),
+            &ObjectId::new("data:third"),
+        )
+        .expect("add third exposure");
+    let context = engine
+        .add_exposure_label(
+            &context,
+            ExposureLabel::new("other:y"),
+            &ObjectId::new("data:fourth"),
+        )
+        .expect("add fourth exposure");
+    assert!(matches!(
+        engine.mint_capability(
+            &subject,
+            &ObjectId::new("tool:second"),
+            &Operation::new("invoke"),
+            Some(&context),
+        ),
+        Err(EngineError::ExposureBlocked { labels, target })
+            if labels == vec![ExposureLabel::new("other:x&other:y")]
+                && target == ObjectId::new("tool:second")
+    ));
+}
+
+#[test]
+fn compound_rule_blocks_after_automatic_classified_data_exposure() {
+    let policy = CListPolicy::from_toml(
+        r#"
+[[objects]]
+id = "agent:test"
+capabilities = [
+    { target = "data:profile", operations = ["read"] },
+    { target = "data:account", operations = ["read"] },
+    { target = "tool:email", operations = ["invoke"] },
+]
+
+[classifications]
+"data:profile" = ["PII:email"]
+"data:account" = ["financial:balance"]
+
+[[exposure_rules]]
+labels = ["PII:*", "financial:*"]
+match = "all"
+blocks = ["tool:email"]
+        "#,
+    )
+    .expect("valid policy");
+    let engine = CapabilityEngine::with_generated_keys(policy);
+    let subject = ObjectId::new("agent:test");
+    let context = engine
+        .mint_context(&subject, SessionConfig::default())
+        .expect("mint context");
+    let context = engine
+        .mint_capability(
+            &subject,
+            &ObjectId::new("data:profile"),
+            &Operation::new("read"),
+            Some(&context),
+        )
+        .expect("read profile")
+        .context
+        .expect("profile read returns updated context");
+    engine
+        .mint_capability(
+            &subject,
+            &ObjectId::new("tool:email"),
+            &Operation::new("invoke"),
+            Some(&context),
+        )
+        .expect("one compound member must not block email");
+
+    let context = engine
+        .mint_capability(
+            &subject,
+            &ObjectId::new("data:account"),
+            &Operation::new("read"),
+            Some(&context),
+        )
+        .expect("read account")
+        .context
+        .expect("account read returns updated context");
+
+    assert!(matches!(
+        engine.mint_capability(
+            &subject,
+            &ObjectId::new("tool:email"),
+            &Operation::new("invoke"),
+            Some(&context),
+        ),
+        Err(EngineError::ExposureBlocked { labels, target })
+            if labels == vec![ExposureLabel::new("PII:email&financial:balance")]
+                && target == ObjectId::new("tool:email")
+    ));
+}
+
 // =========================================================================
 // Context forking (sub-agent inheritance)
 // =========================================================================
