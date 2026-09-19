@@ -89,11 +89,19 @@ impl<'e> AgentHarness<'e> {
         Ok(result.token)
     }
 
-    /// Check if a tool invocation would be allowed without minting a token.
+    /// Probe whether a tool capability can be minted in the current context.
+    ///
+    /// The minted token and any updated context are discarded. `request_tool`
+    /// remains responsible for committing exposure from an actual invocation.
     fn can_invoke(&self, tool: &ObjectId) -> bool {
         self.engine
-            .evaluate(&self.agent_id, tool, &Operation::new("invoke"))
-            .is_authorized()
+            .mint_capability(
+                &self.agent_id,
+                tool,
+                &Operation::new("invoke"),
+                Some(&self.context),
+            )
+            .is_ok()
     }
 
     /// Get the current exposure labels on this session.
@@ -345,4 +353,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn status(allowed: bool) -> &'static str {
     if allowed { "ALLOWED" } else { "BLOCKED" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_policy() -> CListPolicy {
+        CListPolicy::from_toml(
+            r#"
+            [[objects]]
+            id = "agent:test"
+            can_delegate = true
+            capabilities = [
+                { target = "tool:classified", operations = ["invoke"] },
+                { target = "tool:blocked", operations = ["invoke"] },
+                { target = "tool:safe", operations = ["invoke"] },
+                { target = "data:secret", operations = ["read"] },
+            ]
+
+            [[objects]]
+            id = "agent:test:child"
+            capabilities = [
+                { target = "tool:blocked", operations = ["invoke"] },
+                { target = "tool:safe", operations = ["invoke"] },
+            ]
+
+            [classifications]
+            "tool:classified" = ["probe:classified"]
+            "data:secret" = ["secret:data"]
+
+            [[exposure_rules]]
+            labels = ["secret:data"]
+            blocks = ["tool:blocked"]
+            "#,
+        )
+        .expect("test policy should parse")
+    }
+
+    #[test]
+    fn availability_tracks_context_without_committing_probe_exposure() {
+        let engine = CapabilityEngine::with_generated_keys(test_policy());
+        let mut harness = AgentHarness::new(&engine, ObjectId::new("agent:test"))
+            .expect("harness should initialize");
+
+        assert!(harness.can_invoke(&ObjectId::new("tool:classified")));
+        assert!(
+            harness.exposure_labels().is_empty(),
+            "probing a classified tool must not commit its returned context"
+        );
+        assert!(harness.can_invoke(&ObjectId::new("tool:blocked")));
+        assert!(harness.can_invoke(&ObjectId::new("tool:safe")));
+
+        harness
+            .request_data(&ObjectId::new("data:secret"))
+            .expect("classified data should be readable");
+
+        assert!(!harness.can_invoke(&ObjectId::new("tool:blocked")));
+        assert!(matches!(
+            harness.request_tool(&ObjectId::new("tool:blocked")),
+            Err(EngineError::ExposureBlocked { .. })
+        ));
+        assert!(harness.can_invoke(&ObjectId::new("tool:safe")));
+    }
+
+    #[test]
+    fn forked_child_availability_uses_inherited_exposure() {
+        let engine = CapabilityEngine::with_generated_keys(test_policy());
+        let mut parent = AgentHarness::new(&engine, ObjectId::new("agent:test"))
+            .expect("parent harness should initialize");
+        parent
+            .request_data(&ObjectId::new("data:secret"))
+            .expect("classified data should be readable");
+
+        let mut child = parent
+            .fork(ObjectId::new("agent:test:child"))
+            .expect("child context should fork");
+
+        assert_eq!(
+            child.exposure_labels(),
+            &[ExposureLabel::new("secret:data")]
+        );
+        assert!(!child.can_invoke(&ObjectId::new("tool:blocked")));
+        assert!(matches!(
+            child.request_tool(&ObjectId::new("tool:blocked")),
+            Err(EngineError::ExposureBlocked { .. })
+        ));
+        assert!(child.can_invoke(&ObjectId::new("tool:safe")));
+    }
 }

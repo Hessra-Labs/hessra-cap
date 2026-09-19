@@ -105,6 +105,69 @@ impl CListPolicy {
             exposure_rules: Vec::new(),
         }
     }
+
+    fn append_satisfied_compound_labels(
+        rule: &ExposureRuleConfig,
+        attested: &[ExposureLabel],
+        out: &mut Vec<ExposureLabel>,
+    ) {
+        if attested.is_empty() || rule.r#match != "all" || rule.labels.len() < 2 {
+            return;
+        }
+
+        // One bucket of concrete attested labels per pattern. A pattern
+        // nothing matches means the conjunction has not occurred, so the
+        // rule contributes nothing.
+        //
+        // Compounds already in `attested` are excluded as members: a
+        // conjunction is over the plain labels a session actually holds,
+        // and letting a compound stand in for its own member would build
+        // `a&(a&b)`-shaped nonsense.
+        let mut buckets: Vec<Vec<&str>> = Vec::with_capacity(rule.labels.len());
+        for pattern in &rule.labels {
+            let bucket: Vec<&str> = attested
+                .iter()
+                .map(|l| l.as_str())
+                .filter(|l| compound_members(l).is_none())
+                .filter(|l| matches_pattern(pattern, l))
+                .collect();
+            if bucket.is_empty() {
+                return;
+            }
+            buckets.push(bucket);
+        }
+
+        // Cross-product over the buckets. Bounded by what the session has
+        // actually been exposed to, not by the classification universe --
+        // which is the whole reason this replaced a mint-time expansion.
+        let mut combos: Vec<Vec<&str>> = vec![Vec::new()];
+        for bucket in &buckets {
+            let mut next = Vec::with_capacity(combos.len() * bucket.len());
+            for combo in &combos {
+                for label in bucket {
+                    let mut extended = combo.clone();
+                    extended.push(label);
+                    next.push(extended);
+                }
+            }
+            combos = next;
+        }
+
+        for combo in combos {
+            // `compound_label` sorts and dedupes, so distinct combinations
+            // that name the same set collapse here. It errors when fewer
+            // than two distinct members remain -- a combination that picked
+            // the same label for every pattern -- which is not a
+            // conjunction and is correctly skipped.
+            let Ok(label) = compound_label(&combo) else {
+                continue;
+            };
+            let label = ExposureLabel::new(&label);
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+    }
 }
 
 impl PolicyBackend for CListPolicy {
@@ -115,8 +178,7 @@ impl PolicyBackend for CListPolicy {
         operation: &Operation,
     ) -> PolicyDecision {
         // Capability authorization only. Exposure restrictions are enforced at mint
-        // time by the context token's reject rules (see `precluding_labels`
-        // and `compound_reject_rules`).
+        // time by the context token's reject rules (see `precluding_labels`).
         let Some(object) = self.objects.get(subject.as_str()) else {
             return PolicyDecision::Denied {
                 reason: format!("object '{subject}' not found in policy"),
@@ -173,6 +235,8 @@ impl PolicyBackend for CListPolicy {
             }
         };
 
+        let mut rule_compounds = Vec::new();
+
         for rule in &self.exposure_rules {
             // Only rules that block this target contribute candidate facts.
             if !rule
@@ -184,18 +248,18 @@ impl PolicyBackend for CListPolicy {
             }
 
             if rule.r#match == "all" {
-                // Conjunction: contribute the synthesized compound label, not
-                // its members. The compound only exists as a reject rule if the
-                // session actually satisfied the conjunction, so asserting it
-                // cannot trip a per-label reject meant for a different target --
-                // the hazard the old member-gating had to work around.
+                // Conjunction: contribute only this target-blocking rule's
+                // synthesized compound labels, not its members or compounds
+                // belonging to other rules.
                 //
                 // Restricted to compounds already attested: this is the gather
                 // step, not the conferral step, and a conjunction that has not
                 // been conferred yet must not block.
-                for label in self.satisfied_compound_labels(attested) {
-                    if attested.contains(&label) {
-                        push_unique(&label, &mut out);
+                rule_compounds.clear();
+                Self::append_satisfied_compound_labels(rule, attested, &mut rule_compounds);
+                for label in &rule_compounds {
+                    if attested.contains(label) {
+                        push_unique(label, &mut out);
                     }
                 }
                 continue;
@@ -217,71 +281,9 @@ impl PolicyBackend for CListPolicy {
     }
 
     fn satisfied_compound_labels(&self, attested: &[ExposureLabel]) -> Vec<ExposureLabel> {
-        let mut out: Vec<ExposureLabel> = Vec::new();
-        if attested.is_empty() {
-            return out;
-        }
-
+        let mut out = Vec::new();
         for rule in &self.exposure_rules {
-            if rule.r#match != "all" || rule.labels.len() < 2 {
-                continue;
-            }
-
-            // One bucket of concrete attested labels per pattern. A pattern
-            // nothing matches means the conjunction has not occurred, so the
-            // rule contributes nothing.
-            //
-            // Compounds already in `attested` are excluded as members: a
-            // conjunction is over the plain labels a session actually holds,
-            // and letting a compound stand in for its own member would build
-            // `a&(a&b)`-shaped nonsense.
-            let mut buckets: Vec<Vec<&str>> = Vec::with_capacity(rule.labels.len());
-            for pattern in &rule.labels {
-                let bucket: Vec<&str> = attested
-                    .iter()
-                    .map(|l| l.as_str())
-                    .filter(|l| compound_members(l).is_none())
-                    .filter(|l| matches_pattern(pattern, l))
-                    .collect();
-                if bucket.is_empty() {
-                    break;
-                }
-                buckets.push(bucket);
-            }
-            if buckets.len() != rule.labels.len() {
-                continue;
-            }
-
-            // Cross-product over the buckets. Bounded by what the session has
-            // actually been exposed to, not by the classification universe --
-            // which is the whole reason this replaced a mint-time expansion.
-            let mut combos: Vec<Vec<&str>> = vec![Vec::new()];
-            for bucket in &buckets {
-                let mut next = Vec::with_capacity(combos.len() * bucket.len());
-                for combo in &combos {
-                    for label in bucket {
-                        let mut extended = combo.clone();
-                        extended.push(label);
-                        next.push(extended);
-                    }
-                }
-                combos = next;
-            }
-
-            for combo in combos {
-                // `compound_label` sorts and dedupes, so distinct combinations
-                // that name the same set collapse here. It errors when fewer
-                // than two distinct members remain -- a combination that picked
-                // the same label for every pattern -- which is not a
-                // conjunction and is correctly skipped.
-                let Ok(label) = compound_label(&combo) else {
-                    continue;
-                };
-                let label = ExposureLabel::new(&label);
-                if !out.contains(&label) {
-                    out.push(label);
-                }
-            }
+            Self::append_satisfied_compound_labels(rule, attested, &mut out);
         }
         out
     }
